@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 import numpy as np
+from torchvision.transforms.functional import rotate
 
 # Set random seed for reproducibility
 torch.manual_seed(42)
@@ -19,7 +20,7 @@ image_size = 28  # MNIST image size
 latent_dim = 20  # Size of latent space
 message_length = 32  # Length of binary message to hide
 
-# Load MNIST dataset (simple dataset to start with)
+# Load MNIST dataset
 transform = transforms.Compose([
     transforms.ToTensor(),
 ])
@@ -30,6 +31,7 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 test_dataset = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
+# Use the same model class from your original code
 class ImageSteganographyVAE(nn.Module):
     def __init__(self, image_size, latent_dim, message_length):
         super(ImageSteganographyVAE, self).__init__()
@@ -141,15 +143,9 @@ class ImageSteganographyVAE(nn.Module):
         
         return stego_image, x_recon, msg_pred, mu, log_var
 
+# Loss function is the same from your original code
 def loss_function(stego_image, original_image, x_recon, msg_pred, msg, mu, log_var, 
                   stego_weight=1.0, msg_weight=1.0, kl_weight=0.1):
-    """
-    Calculate the loss:
-    - Steganography loss (difference between original and stego image)
-    - Reconstruction loss for the image
-    - Binary cross-entropy for the message
-    - KL divergence for the VAE regularization
-    """
     # Steganography loss (MSE between original and stego image)
     stego_loss = F.mse_loss(stego_image, original_image, reduction='sum') * stego_weight
     
@@ -173,7 +169,156 @@ def generate_message(batch_size, message_length):
     msg = torch.randint(0, 2, (batch_size, message_length), dtype=torch.float32)
     return msg
 
-# Training function
+# Function to apply rotation to images
+def apply_rotation(images, angle):
+    """Apply rotation to a batch of images"""
+    rotated_images = torch.zeros_like(images)
+    for i in range(images.size(0)):
+        rotated_images[i] = rotate(images[i], angle)
+    return rotated_images
+
+# Function to test message recovery accuracy at different rotation angles
+def test_rotation_impact(model, test_loader, angles):
+    model.eval()
+    msg_accuracies = []
+    
+    for angle in angles:
+        msg_accuracy_sum = 0
+        
+        with torch.no_grad():
+            for data, _ in test_loader:
+                data = data.to(device)
+                batch_size = data.size(0)
+                
+                # Generate random messages
+                msg = generate_message(batch_size, model.message_length).to(device)
+                
+                # Create stego image
+                stego_image, _, _, _, _ = model(data, msg)
+                
+                # Apply rotation to stego image
+                rotated_stego = apply_rotation(stego_image, angle)
+                
+                # Extract message from rotated stego image
+                msg_pred = model.extract_message(rotated_stego)
+                
+                # Calculate message accuracy
+                msg_pred_binary = (msg_pred > 0.5).float()
+                accuracy = (msg_pred_binary == msg).float().mean(dim=1)
+                msg_accuracy_sum += accuracy.sum().item()
+        
+        # Calculate average message accuracy for this angle
+        avg_msg_accuracy = msg_accuracy_sum / len(test_loader.dataset)
+        msg_accuracies.append(avg_msg_accuracy)
+        print(f'Rotation angle: {angle}°, Message Accuracy: {avg_msg_accuracy:.4f}')
+    
+    return msg_accuracies
+
+# Visualization function
+def visualize_rotation_results(model, test_loader, angles):
+    model.eval()
+    with torch.no_grad():
+        # Get a batch of test data
+        data, _ = next(iter(test_loader))
+        data = data.to(device)
+        
+        # Use a smaller subset for visualization
+        data = data[:4]
+        
+        # Generate random messages
+        msg = generate_message(data.size(0), model.message_length).to(device)
+        
+        # Create stego images
+        stego_image, _, _, _, _ = model(data, msg)
+        
+        # Create a grid of rotated images and their message predictions
+        num_samples = data.size(0)
+        num_angles = len(angles)
+        
+        # Create figure
+        fig, axes = plt.subplots(num_samples, num_angles + 1, figsize=(3 * (num_angles + 1), 3 * num_samples))
+        
+        # Plot original stego images in the first column
+        for i in range(num_samples):
+            ax = axes[i, 0]
+            ax.imshow(stego_image[i].cpu().numpy().reshape(28, 28), cmap='gray')
+            ax.set_title(f'Original Stego')
+            ax.axis('off')
+        
+        # For each angle, apply rotation and extract message
+        for j, angle in enumerate(angles):
+            # Apply rotation
+            rotated_stego = apply_rotation(stego_image, angle)
+            
+            # Extract message
+            msg_pred = model.extract_message(rotated_stego)
+            msg_pred_binary = (msg_pred > 0.5).float()
+            
+            # Calculate accuracy for each sample
+            accuracies = [(msg_pred_binary[i] == msg[i]).float().mean().item() for i in range(num_samples)]
+            
+            # Plot rotated images and message accuracies
+            for i in range(num_samples):
+                ax = axes[i, j + 1]
+                ax.imshow(rotated_stego[i].cpu().numpy().reshape(28, 28), cmap='gray')
+                ax.set_title(f'Rotated {angle}°\nAcc: {accuracies[i]:.2f}')
+                ax.axis('off')
+        
+        fig.tight_layout()
+        plt.savefig('rotation_impact_visualization.png')
+        plt.close('all')
+        
+        print("Rotation impact visualization saved to 'rotation_impact_visualization.png'")
+
+# Main function
+def main():
+    print(f"Using device: {device}")
+    
+    # Initialize and train the model
+    model = ImageSteganographyVAE(image_size=image_size, latent_dim=latent_dim, message_length=message_length).to(device)
+    
+    # Either train the model from scratch...
+    train_model = True
+    
+    if train_model:
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        
+        for epoch in range(1, epochs + 1):
+            # Use the train and test functions from your original code
+            train_loss = train(model, train_loader, optimizer, epoch)
+            test_loss, msg_accuracy = test(model, test_loader)
+            
+            print(f'Epoch {epoch}, Test Message Accuracy: {msg_accuracy:.4f}')
+        
+        # Save the trained model
+        torch.save(model.state_dict(), 'image_steganography_vae.pth')
+        print("Model saved to 'image_steganography_vae.pth'")
+    else:
+        # ...or load a pretrained model
+        model.load_state_dict(torch.load('image_steganography_vae.pth'))
+        print("Loaded pretrained model from 'image_steganography_vae.pth'")
+    
+    # Test angles from 0 to 90 degrees in increments of 15 degrees
+    angles = [0, 90, 180, 270]
+    
+    # Test message recovery accuracy with different rotation angles
+    msg_accuracies = test_rotation_impact(model, test_loader, angles)
+    
+    # Visualize the results
+    visualize_rotation_results(model, test_loader, angles)
+    
+    # Plot message accuracy vs. rotation angle
+    plt.figure(figsize=(10, 5))
+    plt.plot(angles, msg_accuracies, marker='o')
+    plt.xlabel('Rotation Angle (degrees)')
+    plt.ylabel('Message Recovery Accuracy')
+    plt.title('Impact of Image Rotation on Message Recovery')
+    plt.grid(True)
+    plt.savefig('rotation_impact_plot.png')
+    plt.close()
+    print("Rotation impact plot saved to 'rotation_impact_plot.png'")
+
+# Here are the train and test functions from your original code
 def train(model, train_loader, optimizer, epoch):
     model.train()
     train_loss = 0
@@ -222,9 +367,8 @@ def train(model, train_loader, optimizer, epoch):
           f'Stego: {avg_stego_loss:.6f}, Recon: {avg_recon_loss:.6f}, '
           f'Msg: {avg_msg_loss:.6f}, KL: {avg_kl_loss:.6f}')
     
-    return avg_loss, avg_stego_loss, avg_recon_loss, avg_msg_loss, avg_kl_loss
+    return avg_loss
 
-# Test function
 def test(model, test_loader):
     model.eval()
     test_loss = 0
@@ -274,144 +418,6 @@ def test(model, test_loader):
           f'Msg Accuracy: {avg_msg_accuracy:.4f}')
     
     return avg_loss, avg_msg_accuracy
-
-# Visualization function
-def visualize_results(model, test_loader):
-    model.eval()
-    with torch.no_grad():
-        # Get a batch of test data
-        data, _ = next(iter(test_loader))
-        data = data.to(device)
-        
-        # Generate random messages
-        msg = generate_message(data.size(0), model.message_length).to(device)
-        
-        # Forward pass
-        stego_image, x_recon, msg_pred, _, _ = model(data, msg)
-        
-        # Convert message predictions to binary
-        msg_pred_binary = (msg_pred > 0.5).float()
-        
-        # Move tensors to CPU for visualization
-        data = data.cpu()
-        stego_image = stego_image.cpu()
-        x_recon = x_recon.cpu()
-        msg = msg.cpu()
-        msg_pred_binary = msg_pred_binary.cpu()
-        
-        # Create figure
-        fig, axes = plt.subplots(5, 8, figsize=(16, 10))
-        
-        # Plot original images
-        for i in range(8):
-            ax = axes[0, i]
-            ax.imshow(data[i].numpy().reshape(28, 28), cmap='gray')
-            ax.axis('off')
-            if i == 0:
-                ax.set_title('Original')
-        
-        # Plot stego images
-        for i in range(8):
-            ax = axes[1, i]
-            ax.imshow(stego_image[i].numpy().reshape(28, 28), cmap='gray')
-            ax.axis('off')
-            if i == 0:
-                ax.set_title('Stego Image')
-        
-        # Plot reconstructed images
-        for i in range(8):
-            ax = axes[2, i]
-            ax.imshow(x_recon[i].numpy().reshape(28, 28), cmap='gray')
-            ax.axis('off')
-            if i == 0:
-                ax.set_title('Reconstructed')
-        
-        # Plot original messages
-        for i in range(8):
-            ax = axes[3, i]
-            ax.imshow(msg[i].numpy().reshape(1, -1), cmap='binary', aspect='auto')
-            ax.axis('off')
-            if i == 0:
-                ax.set_title('Original Message')
-        
-        # Plot reconstructed messages
-        for i in range(8):
-            ax = axes[4, i]
-            ax.imshow(msg_pred_binary[i].numpy().reshape(1, -1), cmap='binary', aspect='auto')
-            ax.axis('off')
-            if i == 0:
-                ax.set_title('Recovered Message')
-        
-        # Plot the difference between original and stego images
-        difference = torch.abs(stego_image - data)
-        
-        # Create a new figure for the difference
-        plt.figure(figsize=(16, 3))
-        for i in range(8):
-            plt.subplot(1, 8, i+1)
-            plt.imshow(difference[i].numpy().reshape(28, 28), cmap='hot')
-            plt.axis('off')
-            if i == 0:
-                plt.title('Difference (Message Impact)')
-        
-        plt.tight_layout()
-        plt.savefig('steganography_difference.png')
-        
-        # Save the main results
-        fig.tight_layout()
-        fig.savefig('steganography_results.png')
-        plt.close('all')
-        
-        print("Results visualization saved to 'steganography_results.png'")
-        print("Difference visualization saved to 'steganography_difference.png'")
-
-# Main training loop
-def main():
-    # Initialize model
-    model = ImageSteganographyVAE(image_size=image_size, latent_dim=latent_dim, message_length=message_length).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    
-    # Lists to store metrics
-    train_losses = []
-    test_losses = []
-    msg_accuracies = []
-    
-    # Train the model
-    for epoch in range(1, epochs + 1):
-        train_loss, _, _, _, _ = train(model, train_loader, optimizer, epoch)
-        test_loss, msg_accuracy = test(model, test_loader)
-        
-        train_losses.append(train_loss)
-        test_losses.append(test_loss)
-        msg_accuracies.append(msg_accuracy)
-        
-        # Visualize results every 5 epochs
-        if epoch % 5 == 0:
-            visualize_results(model, test_loader)
-    
-    # Save the trained model
-    torch.save(model.state_dict(), 'image_steganography_vae.pth')
-    print("Model saved to 'image_steganography_vae.pth'")
-    
-    # Plot training curves
-    plt.figure(figsize=(10, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(train_losses, label='Train Loss')
-    plt.plot(test_losses, label='Test Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(msg_accuracies, label='Message Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.legend()
-    
-    plt.tight_layout()
-    plt.savefig('training_curves.png')
-    plt.close()
-    print("Training curves saved to 'training_curves.png'")
 
 if __name__ == "__main__":
     main()
