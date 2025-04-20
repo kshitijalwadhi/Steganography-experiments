@@ -4,6 +4,7 @@ import torch
 from omegaconf import OmegaConf
 
 from src.evaluate import evaluate
+from src.experiment_rotation import experiment_rotation
 from src.models import SteganoModel
 from src.train import train
 from src.utils import get_device, load_config, run_embedding, run_extraction
@@ -15,8 +16,8 @@ def main():
     )
     parser.add_argument(
         "mode",
-        choices=["train", "evaluate", "embed", "extract"],
-        help="Operation mode: train, evaluate, embed, or extract",
+        choices=["train", "evaluate", "embed", "extract", "experiment_rotation"],
+        help="Operation mode: train, evaluate, embed, extract, or experiment_rotation",
     )
     parser.add_argument(
         "--config",
@@ -52,6 +53,8 @@ def main():
         train(cfg)
     elif args.mode == "evaluate":
         evaluate(cfg)  # evaluate function needs cfg, loads model inside
+    elif args.mode == "experiment_rotation":
+        experiment_rotation(cfg)  # Run the rotation experiment
     elif args.mode == "embed" or args.mode == "extract":
         # Embedding and Extraction need an initialized model
         device = get_device(cfg.training.device)  # Use training device setting

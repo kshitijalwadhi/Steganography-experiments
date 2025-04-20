@@ -17,12 +17,12 @@ model:
 # Training Configuration
 training:
   batch_size: 32
-  epochs: 100
+  epochs: 2
   lr: 1e-4
   lam_hide: 0.75 # Weight for hiding loss (MSE)
   lam_reveal: 1.0 # Weight for reveal loss (BCE or MSE)
   checkpoint_dir: ./outputs/checkpoints
-  checkpoint_freq: 10 # Save every N epochs
+  checkpoint_freq: 1 # Save every N epochs
   val_freq: 1 # Validate every N epochs
   device: auto # Options: auto, cuda, cpu
   wandb:
@@ -41,7 +41,7 @@ embed:
   cover_image: null
   secret_image: null # Or use random binary if secret_type is binary
   output_image: ./outputs/stego.png
-  checkpoint_path: null
+  checkpoint_path: ./outputs/checkpoints/best_checkpoint.pth
 
 extract:
   stego_image: null
