@@ -47,11 +47,26 @@ def psnr(mse: torch.Tensor):
     )  # Use 20log10(MAX_I) - 10log10(MSE) where MAX_I=1
 
 
-def bit_accuracy(logits: torch.Tensor, target: torch.Tensor):
-    """Calculate bit accuracy between binary predictions and targets."""
-    assert logits.shape == target.shape
-    preds = (torch.sigmoid(logits) > 0.5).float()
-    return (preds == target).float().mean().item()
+def bit_accuracy(output: torch.Tensor, target: torch.Tensor, threshold=0.5):
+    """Calculate bit accuracy between predictions and targets.
+
+    Handles both logits (binary case) and direct float values (image case) by thresholding.
+    Assumes target is in [0, 1] range for images or is {0, 1} for binary.
+    """
+    assert output.shape == target.shape
+
+    # Determine if output is likely logits (check range, but heuristic)
+    # A safer approach is to know based on the model architecture.
+    # Assuming RotationInvariantRevealNet outputs raw values (not logits/sigmoid)
+    # If output values are outside [0,1], apply sigmoid first
+    # For now, assume output is roughly in [0,1] as it is for MNIST target
+    # If it were logits, we'd use: preds = (torch.sigmoid(output) > threshold).float()
+    preds = (output > threshold).float()
+
+    # Threshold the target as well to ensure it's binary for comparison
+    target_binary = (target > threshold).float()
+
+    return (preds == target_binary).float().mean().item()
 
 
 # Placeholder for SSIM/LPIPS if needed later
