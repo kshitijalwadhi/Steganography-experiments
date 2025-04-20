@@ -241,9 +241,6 @@ class RevealNet(nn.Module):
             self.conv5 = nn.Conv2d(64, out_c, 1)
 
     def forward(self, stego):
-        # Note: We remove the rotation augmentation here since it's now handled
-        # consistently at the SteganoModel level
-        
         if self.rotation_invariant:
             return self.net(stego)
         else:
@@ -275,32 +272,9 @@ class SteganoModel(nn.Module):
             self.hider = HideNet(in_c=hide_in_c)
             
         self.reveal = RevealNet(out_c=reveal_out_c, rotation_invariant=rot_invariant)
-        self.rot_invariant = rot_invariant
 
     def forward(self, cover, secret):
         pre = self.prep(secret)
         stego = self.hider(cover, pre)
-        
-        # Apply rotation during training
-        if self.training and self.rot_invariant:
-            batch_size = cover.size(0)
-            
-            # Choose random rotation angles from all four possibilities with equal probability
-            angles = torch.randint(0, 4, (batch_size,), device=cover.device) * 90
-            
-            # Create rotated versions of stego images
-            rotated_stegos = []
-            for i, angle in enumerate(angles):
-                k = angle.item() // 90  # convert to number of 90-degree rotations
-                rotated = torch.rot90(stego[i], k=k, dims=[1, 2])
-                rotated_stegos.append(rotated)
-            
-            rotated_stegos = torch.stack(rotated_stegos)
-            
-            # Only use the rotated version for recovery
-            recovered = self.reveal(rotated_stegos)
-            return stego, recovered
-        else:
-            # Default forward pass (for validation/testing)
-            recovered = self.reveal(stego)
-            return stego, recovered
+        recovered = self.reveal(stego)
+        return stego, recovered
