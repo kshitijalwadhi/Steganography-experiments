@@ -11,4 +11,4 @@
 # Load our conda environment
 source 587_proj/bin/activate
 
-python3 -u script2.py train --steps 200 --ckpt model
+python3 -u script.py train --steps 200 --ckpt model

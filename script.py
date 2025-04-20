@@ -1,423 +1,231 @@
+import math
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-import matplotlib.pyplot as plt
-import numpy as np
-from torchvision.transforms.functional import rotate
+from torchvision.transforms import functional as TF
+from PIL import Image
 
-# Set random seed for reproducibility
-torch.manual_seed(42)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Hyperparameters
-batch_size = 64
-learning_rate = 1e-3
-epochs = 20
-image_size = 28  # MNIST image size
-latent_dim = 20  # Size of latent space
-message_length = 32  # Length of binary message to hide
+# Network components
+def conv_block(in_c, out_c, kernel=3, stride=1):
+    """Create a convolution block with batch norm and ReLU."""
+    return nn.Sequential(
+        nn.Conv2d(in_c, out_c, kernel, stride, padding=kernel // 2, bias=False),
+        nn.BatchNorm2d(out_c),
+        nn.ReLU(inplace=True),
+    )
 
-# Load MNIST dataset
-transform = transforms.Compose([
-    transforms.ToTensor(),
-])
 
-train_dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-
-test_dataset = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-# Use the same model class from your original code
-class ImageSteganographyVAE(nn.Module):
-    def __init__(self, image_size, latent_dim, message_length):
-        super(ImageSteganographyVAE, self).__init__()
-        
-        # Image dimensions
-        self.image_size = image_size
-        self.image_channels = 1  # Grayscale for MNIST
-        self.hidden_dim = 400  # Hidden dimension
-        self.latent_dim = latent_dim
-        self.message_length = message_length
-        
-        # Message encoder (transforms binary message for embedding)
-        self.msg_preprocessor = nn.Sequential(
-            nn.Linear(self.message_length, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, self.image_size * self.image_size)  # Same size as flattened image
+class PrepNet(nn.Module):
+    """Network to prepare the secret binary message."""
+    def __init__(self, in_c=1, out_c=32):
+        super().__init__()
+        self.net = nn.Sequential(
+            conv_block(in_c, 32, 5),
+            conv_block(32, 64, 3),
+            conv_block(64, out_c, 3),
         )
-        
-        # Encoder (image with embedded message to latent space)
-        self.encoder = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(self.image_size * self.image_size * self.image_channels, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.ReLU(),
-        )
-        
-        # Mean and variance for VAE
-        self.fc_mu = nn.Linear(self.hidden_dim, self.latent_dim)
-        self.fc_var = nn.Linear(self.hidden_dim, self.latent_dim)
-        
-        # Message decoder (extracts message from stego-image)
-        self.msg_decoder = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(self.image_size * self.image_size * self.image_channels, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, self.message_length),
-            nn.Sigmoid()  # Output probabilities for binary message
-        )
-        
-        # Image decoder (latent space to image)
-        self.decoder = nn.Sequential(
-            nn.Linear(self.latent_dim, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, self.image_size * self.image_size * self.image_channels),
-            nn.Sigmoid()  # Image pixel values between 0 and 1
-        )
-    
-    def embed_message(self, x, msg):
-        """Embed the message directly into the image"""
-        batch_size = x.size(0)
-        
-        # Preprocess message to match image size
-        msg_processed = self.msg_preprocessor(msg)
-        msg_processed = msg_processed.view(batch_size, 1, self.image_size, self.image_size)
-        
-        # Scale the message contribution to be small (strength parameter can be adjusted)
-        strength = 0.1
-        msg_processed = msg_processed * strength
-        
-        # Add the message pattern to the original image
-        # Using addition with small strength to minimally impact visual appearance
-        stego_image = x + msg_processed
-        
-        # Ensure pixel values remain in valid range [0, 1]
-        stego_image = torch.clamp(stego_image, 0, 1)
-        
-        return stego_image
-    
-    def extract_message(self, stego_image):
-        """Extract the message from the stego image"""
-        msg_pred = self.msg_decoder(stego_image)
-        return msg_pred
-    
-    def encode(self, x):
-        """Encode the image into latent space parameters"""
-        h = self.encoder(x)
-        mu = self.fc_mu(h)
-        log_var = self.fc_var(h)
-        return mu, log_var
-    
-    def reparameterize(self, mu, log_var):
-        """Reparameterization trick for VAE"""
-        std = torch.exp(0.5 * log_var)
-        eps = torch.randn_like(std)
-        z = mu + eps * std
-        return z
-    
-    def decode(self, z):
-        """Decode the latent representation back to image"""
-        return self.decoder(z).view(-1, self.image_channels, self.image_size, self.image_size)
-    
-    def forward(self, x, msg):
-        """Forward pass through the network"""
-        # Embed message in the original image
-        stego_image = self.embed_message(x, msg)
-        
-        # Extract message from stego image (for training the extraction)
-        msg_pred = self.extract_message(stego_image)
-        
-        # Encode stego image to latent space
-        mu, log_var = self.encode(stego_image)
-        z = self.reparameterize(mu, log_var)
-        
-        # Decode image from latent space
-        x_recon = self.decode(z)
-        
-        return stego_image, x_recon, msg_pred, mu, log_var
 
-# Loss function is the same from your original code
-def loss_function(stego_image, original_image, x_recon, msg_pred, msg, mu, log_var, 
-                  stego_weight=1.0, msg_weight=1.0, kl_weight=0.1):
-    # Steganography loss (MSE between original and stego image)
-    stego_loss = F.mse_loss(stego_image, original_image, reduction='sum') * stego_weight
-    
-    # Image reconstruction loss (MSE)
-    recon_loss = F.mse_loss(x_recon, original_image, reduction='sum')
-    
-    # Message reconstruction loss (Binary Cross Entropy)
-    msg_loss = F.binary_cross_entropy(msg_pred, msg, reduction='sum') * msg_weight
-    
-    # KL divergence
-    kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp()) * kl_weight
-    
-    # Total loss
-    total_loss = stego_loss + recon_loss + msg_loss + kl_loss
-    
-    return total_loss, stego_loss, recon_loss, msg_loss, kl_loss
+    def forward(self, x):
+        return self.net(x)
 
-# Function to generate random binary messages
-def generate_message(batch_size, message_length):
-    """Generate random binary messages"""
-    msg = torch.randint(0, 2, (batch_size, message_length), dtype=torch.float32)
-    return msg
 
-# Function to apply rotation to images
-def apply_rotation(images, angle):
-    """Apply rotation to a batch of images"""
-    rotated_images = torch.zeros_like(images)
-    for i in range(images.size(0)):
-        rotated_images[i] = rotate(images[i], angle)
-    return rotated_images
+class HideNet(nn.Module):
+    """Tiny U-Net (1 downsample + 1 upsample) to hide secret in cover image."""
+    def __init__(self, in_c=3 + 32):
+        super().__init__()
+        # Encoder
+        self.enc1 = conv_block(in_c, 64, 3)
+        self.enc2 = conv_block(64, 128, 3, stride=2)
+        # Bottleneck
+        self.bottleneck = conv_block(128, 128, 3)
+        # Decoder
+        self.up = nn.ConvTranspose2d(128, 64, 2, stride=2)
+        self.dec1 = conv_block(64 + 64, 64, 3)
+        self.out_conv = nn.Conv2d(64, 3, 1)
 
-# Function to test message recovery accuracy at different rotation angles
-def test_rotation_impact(model, test_loader, angles):
-    model.eval()
-    msg_accuracies = []
-    
-    for angle in angles:
-        msg_accuracy_sum = 0
-        
-        with torch.no_grad():
-            for data, _ in test_loader:
-                data = data.to(device)
-                batch_size = data.size(0)
-                
-                # Generate random messages
-                msg = generate_message(batch_size, model.message_length).to(device)
-                
-                # Create stego image
-                stego_image, _, _, _, _ = model(data, msg)
-                
-                # Apply rotation to stego image
-                rotated_stego = apply_rotation(stego_image, angle)
-                
-                # Extract message from rotated stego image
-                msg_pred = model.extract_message(rotated_stego)
-                
-                # Calculate message accuracy
-                msg_pred_binary = (msg_pred > 0.5).float()
-                accuracy = (msg_pred_binary == msg).float().mean(dim=1)
-                msg_accuracy_sum += accuracy.sum().item()
-        
-        # Calculate average message accuracy for this angle
-        avg_msg_accuracy = msg_accuracy_sum / len(test_loader.dataset)
-        msg_accuracies.append(avg_msg_accuracy)
-        print(f'Rotation angle: {angle}°, Message Accuracy: {avg_msg_accuracy:.4f}')
-    
-    return msg_accuracies
+    def forward(self, cover, pre_secret):
+        x = torch.cat([cover, pre_secret], dim=1)
+        e1 = self.enc1(x)
+        e2 = self.enc2(e1)
+        b = self.bottleneck(e2)
+        u = self.up(b)
+        u = torch.cat([u, e1], dim=1)
+        d1 = self.dec1(u)
+        return torch.sigmoid(self.out_conv(d1))
 
-# Visualization function
-def visualize_rotation_results(model, test_loader, angles):
-    model.eval()
-    with torch.no_grad():
-        # Get a batch of test data
-        data, _ = next(iter(test_loader))
-        data = data.to(device)
-        
-        # Use a smaller subset for visualization
-        data = data[:4]
-        
-        # Generate random messages
-        msg = generate_message(data.size(0), model.message_length).to(device)
-        
-        # Create stego images
-        stego_image, _, _, _, _ = model(data, msg)
-        
-        # Create a grid of rotated images and their message predictions
-        num_samples = data.size(0)
-        num_angles = len(angles)
-        
-        # Create figure
-        fig, axes = plt.subplots(num_samples, num_angles + 1, figsize=(3 * (num_angles + 1), 3 * num_samples))
-        
-        # Plot original stego images in the first column
-        for i in range(num_samples):
-            ax = axes[i, 0]
-            ax.imshow(stego_image[i].cpu().numpy().reshape(28, 28), cmap='gray')
-            ax.set_title(f'Original Stego')
-            ax.axis('off')
-        
-        # For each angle, apply rotation and extract message
-        for j, angle in enumerate(angles):
-            # Apply rotation
-            rotated_stego = apply_rotation(stego_image, angle)
+
+class RevealNet(nn.Module):
+    """Network to reveal the hidden secret from a stego image."""
+    def __init__(self, out_c=1):
+        super().__init__()
+        self.conv1 = conv_block(3, 32, 5)
+        self.conv2 = conv_block(32, 32, 3)
+        self.conv3 = conv_block(32, 64, 3)
+        self.conv4 = conv_block(64, 64, 3)
+        self.conv5 = nn.Conv2d(64, out_c, 1)
+
+    def forward(self, stego):
+        x = self.conv1(stego)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.conv4(x)
+        return self.conv5(x)  # logits
+
+
+class SteganoModel(nn.Module):
+    """Full steganography model combining prep, hide, and reveal networks."""
+    def __init__(self):
+        super().__init__()
+        self.prep = PrepNet()
+        self.hider = HideNet()
+        self.reveal = RevealNet()
+
+    def forward(self, cover, secret):
+        pre = self.prep(secret)
+        stego = self.hider(cover, pre)
+        recovered = self.reveal(stego)
+        return stego, recovered
+
+
+# Helper metrics
+def psnr(mse: torch.Tensor):
+    """Calculate Peak Signal-to-Noise Ratio from MSE."""
+    return 10 * math.log10(1.0 / mse.clamp(min=1e-10))
+
+
+def bit_accuracy(logits: torch.Tensor, target: torch.Tensor):
+    """Calculate bit accuracy between binary predictions and targets."""
+    preds = (torch.sigmoid(logits) > 0.5).float()
+    return (preds == target).float().mean()
+
+
+# Training and embedding utilities
+def train_demo(device=None, steps=100):
+    """Quick training run on CIFAR-10 covers. Returns trained model."""
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Data preparation
+    tfm = transforms.Compose([
+        transforms.Resize(64),
+        transforms.ToTensor(),
+    ])
+    data = datasets.CIFAR10("./data", train=True, download=True, transform=tfm)
+    loader = DataLoader(data, batch_size=8, shuffle=True, num_workers=2)
+
+    # Model setup
+    model = SteganoModel().to(device)
+    optim = torch.optim.Adam(model.parameters(), lr=1e-4)
+    bce = nn.BCEWithLogitsLoss()
+    lam_hide, lam_reveal = 0.25, 1.0
+
+    # Training loop
+    it = iter(loader)
+    for step in range(steps):
+        try:
+            cover, _ = next(it)
+        except StopIteration:
+            it = iter(loader)
+            cover, _ = next(it)
             
-            # Extract message
-            msg_pred = model.extract_message(rotated_stego)
-            msg_pred_binary = (msg_pred > 0.5).float()
-            
-            # Calculate accuracy for each sample
-            accuracies = [(msg_pred_binary[i] == msg[i]).float().mean().item() for i in range(num_samples)]
-            
-            # Plot rotated images and message accuracies
-            for i in range(num_samples):
-                ax = axes[i, j + 1]
-                ax.imshow(rotated_stego[i].cpu().numpy().reshape(28, 28), cmap='gray')
-                ax.set_title(f'Rotated {angle}°\nAcc: {accuracies[i]:.2f}')
-                ax.axis('off')
-        
-        fig.tight_layout()
-        plt.savefig('rotation_impact_visualization.png')
-        plt.close('all')
-        
-        print("Rotation impact visualization saved to 'rotation_impact_visualization.png'")
+        cover = cover.to(device)
+        secret = torch.randint(0, 2, (cover.size(0), 1, 64, 64), device=device).float()
 
-# Main function
-def main():
-    print(f"Using device: {device}")
-    
-    # Initialize and train the model
-    model = ImageSteganographyVAE(image_size=image_size, latent_dim=latent_dim, message_length=message_length).to(device)
-    
-    # Either train the model from scratch...
-    train_model = True
-    
-    if train_model:
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-        
-        for epoch in range(1, epochs + 1):
-            # Use the train and test functions from your original code
-            train_loss = train(model, train_loader, optimizer, epoch)
-            test_loss, msg_accuracy = test(model, test_loader)
-            
-            print(f'Epoch {epoch}, Test Message Accuracy: {msg_accuracy:.4f}')
-        
-        # Save the trained model
-        torch.save(model.state_dict(), 'image_steganography_vae.pth')
-        print("Model saved to 'image_steganography_vae.pth'")
-    else:
-        # ...or load a pretrained model
-        model.load_state_dict(torch.load('image_steganography_vae.pth'))
-        print("Loaded pretrained model from 'image_steganography_vae.pth'")
-    
-    # Test angles from 0 to 90 degrees in increments of 15 degrees
-    angles = [0, 90, 180, 270]
-    
-    # Test message recovery accuracy with different rotation angles
-    msg_accuracies = test_rotation_impact(model, test_loader, angles)
-    
-    # Visualize the results
-    visualize_rotation_results(model, test_loader, angles)
-    
-    # Plot message accuracy vs. rotation angle
-    plt.figure(figsize=(10, 5))
-    plt.plot(angles, msg_accuracies, marker='o')
-    plt.xlabel('Rotation Angle (degrees)')
-    plt.ylabel('Message Recovery Accuracy')
-    plt.title('Impact of Image Rotation on Message Recovery')
-    plt.grid(True)
-    plt.savefig('rotation_impact_plot.png')
-    plt.close()
-    print("Rotation impact plot saved to 'rotation_impact_plot.png'")
+        stego, rec = model(cover, secret)
+        loss_hide = F.mse_loss(stego, cover)
+        loss_reveal = bce(rec, secret)
+        loss = lam_hide * loss_hide + lam_reveal * loss_reveal
 
-# Here are the train and test functions from your original code
-def train(model, train_loader, optimizer, epoch):
-    model.train()
-    train_loss = 0
-    stego_loss_sum = 0
-    recon_loss_sum = 0
-    msg_loss_sum = 0
-    kl_loss_sum = 0
-    
-    for batch_idx, (data, _) in enumerate(train_loader):
-        data = data.to(device)
-        optimizer.zero_grad()
-        
-        # Generate random messages for training
-        msg = generate_message(data.size(0), model.message_length).to(device)
-        
-        # Forward pass
-        stego_image, x_recon, msg_pred, mu, log_var = model(data, msg)
-        
-        # Calculate loss
-        loss, stego_loss, recon_loss, msg_loss, kl_loss = loss_function(
-            stego_image, data, x_recon, msg_pred, msg, mu, log_var)
-        
-        # Backward pass
+        optim.zero_grad()
         loss.backward()
-        optimizer.step()
-        
-        # Update metrics
-        train_loss += loss.item()
-        stego_loss_sum += stego_loss.item()
-        recon_loss_sum += recon_loss.item()
-        msg_loss_sum += msg_loss.item()
-        kl_loss_sum += kl_loss.item()
-        
-        if batch_idx % 100 == 0:
-            print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} '
-                  f'({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item() / len(data):.6f}')
-    
-    # Print average losses
-    avg_loss = train_loss / len(train_loader.dataset)
-    avg_stego_loss = stego_loss_sum / len(train_loader.dataset)
-    avg_recon_loss = recon_loss_sum / len(train_loader.dataset)
-    avg_msg_loss = msg_loss_sum / len(train_loader.dataset)
-    avg_kl_loss = kl_loss_sum / len(train_loader.dataset)
-    
-    print(f'====> Epoch: {epoch} Average loss: {avg_loss:.6f}, '
-          f'Stego: {avg_stego_loss:.6f}, Recon: {avg_recon_loss:.6f}, '
-          f'Msg: {avg_msg_loss:.6f}, KL: {avg_kl_loss:.6f}')
-    
-    return avg_loss
+        optim.step()
 
-def test(model, test_loader):
-    model.eval()
-    test_loss = 0
-    stego_loss_sum = 0
-    recon_loss_sum = 0
-    msg_loss_sum = 0
-    kl_loss_sum = 0
-    msg_accuracy_sum = 0
+        if step % 10 == 0:
+            acc = bit_accuracy(rec, secret).item()
+            print(f"Step {step:03d} | L_hide={loss_hide.item():.4f} | L_msg={loss_reveal.item():.4f} "
+                  f"| PSNR={psnr(loss_hide):.2f}dB | Acc={acc*100:.1f}%")
     
+    return model.cpu()
+
+
+def embed_image(model: SteganoModel, cover_path, out_path="stego.png", device=None):
+    """Embed a random binary secret in a cover image and save the result."""
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    model = model.to(device).eval()
+
+    # Load and prepare image
+    pil = Image.open(cover_path).convert("RGB")
+    tfm = transforms.Compose([transforms.Resize(64), transforms.ToTensor()])
+    cover = tfm(pil).unsqueeze(0).to(device)
+    secret = torch.randint(0, 2, (1, 1, 64, 64), device=device).float()
+
+    # Generate stego image
     with torch.no_grad():
-        for data, _ in test_loader:
-            data = data.to(device)
-            
-            # Generate random messages for testing
-            msg = generate_message(data.size(0), model.message_length).to(device)
-            
-            # Forward pass
-            stego_image, x_recon, msg_pred, mu, log_var = model(data, msg)
-            
-            # Calculate loss
-            loss, stego_loss, recon_loss, msg_loss, kl_loss = loss_function(
-                stego_image, data, x_recon, msg_pred, msg, mu, log_var)
-            
-            # Update metrics
-            test_loss += loss.item()
-            stego_loss_sum += stego_loss.item()
-            recon_loss_sum += recon_loss.item()
-            msg_loss_sum += msg_loss.item()
-            kl_loss_sum += kl_loss.item()
-            
-            # Calculate message accuracy (threshold at 0.5)
-            msg_pred_binary = (msg_pred > 0.5).float()
-            accuracy = (msg_pred_binary == msg).float().mean(dim=1)
-            msg_accuracy_sum += accuracy.sum().item()
+        stego, rec = model(cover, secret)
+        acc = bit_accuracy(rec, secret).item()
+        mse = F.mse_loss(stego, cover)
     
-    # Calculate average metrics
-    avg_loss = test_loss / len(test_loader.dataset)
-    avg_stego_loss = stego_loss_sum / len(test_loader.dataset)
-    avg_recon_loss = recon_loss_sum / len(test_loader.dataset) 
-    avg_msg_loss = msg_loss_sum / len(test_loader.dataset)
-    avg_kl_loss = kl_loss_sum / len(test_loader.dataset)
-    avg_msg_accuracy = msg_accuracy_sum / len(test_loader.dataset)
-    
-    print(f'====> Test set loss: {avg_loss:.6f}, '
-          f'Stego: {avg_stego_loss:.6f}, Recon: {avg_recon_loss:.6f}, '
-          f'Msg: {avg_msg_loss:.6f}, KL: {avg_kl_loss:.6f}, '
-          f'Msg Accuracy: {avg_msg_accuracy:.4f}')
-    
-    return avg_loss, avg_msg_accuracy
+    # Save and report
+    TF.to_pil_image(stego.squeeze(0).cpu()).save(out_path)
+    print(f"Embedded! PSNR={psnr(mse):.2f} dB | Acc={acc*100:.1f}% | saved to {out_path}")
+
+
+# Auto-run when inside IPython/Jupyter
+def jupyter_auto_run():
+    """Auto-run quick demo when in Jupyter environment."""
+    if "get_ipython" in globals():
+        print("🔄 Detected Jupyter environment – starting quick demo (100 steps)…")
+        demo_model = train_demo(steps=100)
+        print("✅ Demo finished. You now have `demo_model` in memory.")
+        return demo_model
+    return None
+
+
+# CLI functionality
+def main():
+    """Command-line interface for training and embedding."""
+    if "get_ipython" in globals():
+        return jupyter_auto_run()
+        
+    import argparse
+
+    p = argparse.ArgumentParser("Simple Deep Stego – CLI")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    # Train command
+    t = sub.add_parser("train", help="train demo and save checkpoint")
+    t.add_argument("--ckpt", type=str, default="", help="where to save .pt weights")
+    t.add_argument("--steps", type=int, default=100)
+
+    # Embed command
+    e = sub.add_parser("embed", help="embed one image")
+    e.add_argument("cover", type=str)
+    e.add_argument("--ckpt", type=str, default="", help="load weights")
+    e.add_argument("--out", type=str, default="stego.png")
+
+    args = p.parse_args()
+
+    if args.cmd == "train":
+        m = train_demo(steps=args.steps)
+        if args.ckpt:
+            torch.save(m.state_dict(), args.ckpt)
+            print(f"Weights saved to {args.ckpt}")
+    else:  # embed
+        m = SteganoModel()
+        if args.ckpt:
+            m.load_state_dict(torch.load(args.ckpt, map_location="cpu"))
+            print(f"Loaded weights from {args.ckpt}")
+        embed_image(m, args.cover, args.out)
+
 
 if __name__ == "__main__":
     main()
+else:
+    jupyter_auto_run()
