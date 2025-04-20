@@ -1,0 +1,9 @@
+torch
+torchvision
+pyyaml
+wandb
+pillow
+lpips
+omegaconf
+scikit-image
+pandas

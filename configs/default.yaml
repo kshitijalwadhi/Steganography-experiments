@@ -1,0 +1,49 @@
+# Data Configuration
+data:
+  root_dir: ./data
+  cover_dataset: CIFAR10 # Options: CIFAR10, ImageFolder
+  secret_type: binary # Options: binary, image
+  image_folder_cover: null # Path to cover image folder if cover_dataset is ImageFolder
+  image_folder_secret: null # Path to secret image folder if secret_type is image
+  image_size: 64
+  num_workers: 4
+
+# Model Configuration (Currently fixed architecture)
+model:
+  prep_out_channels: 32
+  hide_in_channels: 35 # 3 (cover) + 32 (prep_out_channels)
+  reveal_out_channels: 1 # 1 for binary secret, 3 for image secret
+
+# Training Configuration
+training:
+  batch_size: 32
+  epochs: 100
+  lr: 1e-4
+  lam_hide: 0.75 # Weight for hiding loss (MSE)
+  lam_reveal: 1.0 # Weight for reveal loss (BCE or MSE)
+  checkpoint_dir: ./outputs/checkpoints
+  checkpoint_freq: 10 # Save every N epochs
+  val_freq: 1 # Validate every N epochs
+  device: auto # Options: auto, cuda, cpu
+  wandb:
+    enabled: true
+    project: "deep-steganography"
+    entity: null # Your wandb username or team name
+    run_name: null # Auto-generated if null
+
+# Evaluation Configuration
+evaluation:
+  batch_size: 32
+  metrics: [psnr, ssim, lpips, bit_acc] # Available: psnr, ssim, lpips, bit_acc
+
+# Embedding/Extraction Configuration
+embed:
+  cover_image: null
+  secret_image: null # Or use random binary if secret_type is binary
+  output_image: ./outputs/stego.png
+  checkpoint_path: null
+
+extract:
+  stego_image: null
+  output_secret: ./outputs/revealed_secret.png
+  checkpoint_path: null
