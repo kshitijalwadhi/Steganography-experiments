@@ -7,3 +7,4 @@ lpips
 omegaconf
 scikit-image
 pandas
+escnn

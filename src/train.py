@@ -29,22 +29,50 @@ def validate_epoch(model, val_loader, criterion_hide, criterion_reveal, device, 
     total_val_loss_reveal = 0.0
     total_val_psnr = 0.0
     total_val_acc = 0.0
+    
+    # Add rotation-specific accuracy tracking
+    if hasattr(model, 'rot_invariant') and model.rot_invariant:
+        rotation_accs = {0: 0.0, 90: 0.0, 180: 0.0, 270: 0.0}
+        rotation_counts = {0: 0, 90: 0, 180: 0, 270: 0}
+    
     num_batches = len(val_loader)
 
     with torch.no_grad():  # Disable gradient calculations
         for cover, secret in tqdm(val_loader, desc="Validating", leave=False):
             cover, secret = cover.to(device), secret.to(device)
-
+            
+            # For standard metrics, use unrotated images
             stego, rec_secret = model(cover, secret)
-
+            
             loss_hide = criterion_hide(stego, cover)
             if cfg.data.secret_type == "binary":
                 loss_reveal = criterion_reveal(rec_secret, secret)
                 acc = bit_accuracy(rec_secret, secret)
             else:  # Image secret
-                # Assuming reveal net outputs logits, apply sigmoid before MSE
                 loss_reveal = criterion_reveal(torch.sigmoid(rec_secret), secret)
-                acc = 0  # Accuracy doesn't make sense for image secrets directly
+                acc = 0
+                
+            # For invariance testing, also evaluate on different rotations
+            if hasattr(model, 'rot_invariant') and model.rot_invariant and cfg.data.secret_type == "binary":
+                for angle in [0, 90, 180, 270]:
+                    # Skip 0 as we already computed it
+                    if angle == 0:
+                        rotation_accs[angle] += acc * len(secret)
+                        rotation_counts[angle] += len(secret)
+                        continue
+                        
+                    # Rotate the stego image
+                    k = angle // 90
+                    rotated_stegos = torch.stack([torch.rot90(stego[i], k=k, dims=[1, 2]) 
+                                                for i in range(stego.size(0))])
+                    
+                    # Get predictions on rotated stegos
+                    rotated_rec = model.reveal(rotated_stegos)
+                    
+                    # Calculate accuracy for this rotation
+                    rot_acc = bit_accuracy(rotated_rec, secret)
+                    rotation_accs[angle] += rot_acc * len(secret)
+                    rotation_counts[angle] += len(secret)
 
             loss = (
                 cfg.training.lam_hide * loss_hide
@@ -55,14 +83,25 @@ def validate_epoch(model, val_loader, criterion_hide, criterion_reveal, device, 
             total_val_loss_hide += loss_hide.item()
             total_val_loss_reveal += loss_reveal.item()
             total_val_psnr += psnr(loss_hide)
-            total_val_acc += acc
+            total_val_acc += acc * len(secret)  # Weighted by batch size
 
+    # Normalize
     avg_val_loss = total_val_loss / num_batches
     avg_val_loss_hide = total_val_loss_hide / num_batches
     avg_val_loss_reveal = total_val_loss_reveal / num_batches
     avg_val_psnr = total_val_psnr / num_batches
-    avg_val_acc = total_val_acc / num_batches
-
+    
+    # Calculate accuracy properly weighted by total examples
+    total_examples = sum(len(batch[0]) for batch in val_loader)
+    avg_val_acc = total_val_acc / total_examples
+    
+    # Print rotation-specific accuracy if available
+    if hasattr(model, 'rot_invariant') and model.rot_invariant and cfg.data.secret_type == "binary":
+        for angle in rotation_accs:
+            if rotation_counts[angle] > 0:
+                rot_acc = rotation_accs[angle] / rotation_counts[angle]
+                print(f"  Validation Accuracy @ {angle}°: {rot_acc*100:.1f}%")
+    
     return (
         avg_val_loss,
         avg_val_loss_hide,
@@ -123,9 +162,15 @@ def train(cfg):
 
             optimizer.zero_grad()
 
-            stego, rec_secret = model(cover, secret)
-
+            # Forward pass
+            outputs = model(cover, secret)
+            
+            # All outputs now have the same format: (stego, rec_secret)
+            stego, rec_secret = outputs
+            
+            # Standard losses
             loss_hide = criterion_hide(stego, cover)
+            
             if cfg.data.secret_type == "binary":
                 loss_reveal = criterion_reveal(rec_secret, secret)
                 acc = bit_accuracy(rec_secret, secret)

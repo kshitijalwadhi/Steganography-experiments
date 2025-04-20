@@ -1,0 +1,44 @@
+# Rotation Invariant Steganography Configuration
+
+# Data configuration
+data:
+  root_dir: ./data
+  cover_dataset: CIFAR10 # Options: CIFAR10, ImageFolder
+  secret_type: binary # Options: binary, image
+  image_folder_cover: null # Path to cover image folder if cover_dataset is ImageFolder
+  image_folder_secret: null # Path to secret image folder if secret_type is image
+  image_size: 64
+  num_workers: 4
+
+# Model configuration
+model:
+  prep_out_channels: 32
+  hide_in_channels: 35 # 3 (cover) + 32 (prep_out_channels)
+  reveal_out_channels: 1 # 1 for binary secret, 3 for image secret
+  rotation_invariant: true  # Enable rotation invariance in RevealNet
+
+# Training configuration
+training:
+  batch_size: 32
+  epochs: 2
+  lr: 1e-4
+  lam_hide: 0.75 # Weight for hiding loss (MSE)
+  lam_reveal: 1.0 # Weight for reveal loss (BCE or MSE)
+  checkpoint_dir: ./outputs/checkpoints/rotation_invariant
+  checkpoint_freq: 1 # Save every N epochs
+  val_freq: 1 # Validate every N epochs
+  device: auto # Options: auto, cuda, cpu
+  wandb:
+    enabled: true
+    project: "deep-steganography"
+    entity: null # Your wandb username or team name
+    run_name: null # Auto-generated if null
+
+# Evaluation Configuration
+evaluation:
+  batch_size: 32
+  metrics: [psnr, ssim, lpips, bit_acc] # Available: psnr, ssim, lpips, bit_acc
+
+# Embedding configuration
+embed:
+  checkpoint_path: "./outputs/checkpoints/rotation_invariant/best_checkpoint.pth"  # Path to model checkpoint for evaluation/embedding
