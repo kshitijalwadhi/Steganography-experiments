@@ -1,0 +1,14 @@
+#!/bin/bash
+#SBATCH -A gpu
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=2:00:00
+#SBATCH --job-name kshitij_proj
+#SBATCH --output kshitij_proj.out
+#SBATCH --error kshitij_proj.err
+
+# Load our conda environment
+source 587_proj/bin/activate
+
+python3 -u script2.py train --steps 200 --ckpt model
