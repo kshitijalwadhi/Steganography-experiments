@@ -2,9 +2,9 @@
 Test script for evaluating rotation robustness of the steganography model.
 
 This script loads a trained model and evaluates its performance on rotated stego images
-at angles of 0, 90, 180, and 270 degrees, using BINARY secrets.
+at angles from 0 to 359 degrees (in 15-degree steps), using BINARY secrets.
 Applies inverse rotation to revealed secret before calculating Accuracy.
-Includes visualization of rotated revealed secrets and aligned secrets.
+Includes visualization of rotated revealed secrets and aligned secrets for CARDINAL angles (0, 90, 180, 270).
 """
 
 import argparse
@@ -23,16 +23,18 @@ from src.utils import bit_accuracy, get_device, load_checkpoint, load_config
 
 
 def apply_rotation(img, angle):
-    """Rotate image tensor by specified angle in degrees."""
+    """Rotate image tensor by specified angle in degrees using NEAREST interpolation."""
     angle = float(angle)
     if angle == 0:
         return img
     else:
-        return TF.rotate(img, angle)
+        # Use NEAREST interpolation for binary-like data
+        return TF.rotate(img, angle, interpolation=TF.InterpolationMode.NEAREST)
 
 
 def get_inverse_rotation_angle(angle):
-    """Calculate the inverse rotation angle for 0, 90, 180, 270 degrees."""
+    """Calculate the inverse rotation angle."""
+    # For cardinal angles, return the exact inverse multiple of 90
     if angle == 0:
         return 0
     elif angle == 90:
@@ -42,7 +44,7 @@ def get_inverse_rotation_angle(angle):
     elif angle == 270:
         return 90
     else:
-        return -angle
+        return -angle  # Use negative angle for others
 
 
 def tensor_to_numpy(tensor):
@@ -70,18 +72,20 @@ def visualize_results(
     rotated_stegos,
     recovered_secrets_rotated,
     recovered_secrets_aligned,
-    angles,
+    angles_to_plot,
     filename="rotation_test_results.png",
 ):
-    """Visualize results: Cover, Secret, Stego(0), Rotated Stegos, Rotated Recovered, Aligned Recovered."""
-    num_angles = len(angles)
-    cols = max(3, num_angles)
-    rows = 4  # Increased rows for the extra visualization step
+    """Visualize results for cardinal angles (0, 90, 180, 270)."""
+    num_angles_plot = len(angles_to_plot)
+    # Set fixed columns for cardinal angle visualization
+    cols = 4  # One column per cardinal angle + one empty for alignment?
+    rows = 4
 
-    fig, axes = plt.subplots(
-        rows, cols, figsize=(cols * 3.5, rows * 3.5)
-    )  # Adjusted figsize
-    fig.suptitle("Rotation Robustness Test Results (Binary Secrets)", fontsize=16)
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.5, rows * 3.5))
+    fig.suptitle(
+        "Rotation Robustness Test Results (Binary Secrets, Cardinal Angles)",
+        fontsize=16,
+    )
 
     if rows == 1 and cols == 1:
         axes = np.array([[axes]])
@@ -90,7 +94,7 @@ def visualize_results(
     elif cols == 1:
         axes = np.array([[ax] for ax in axes])
 
-    # --- Row 1: Originals ---
+    # --- Row 1: Originals (Span first 3 columns) ---
     axes[0, 0].imshow(tensor_to_numpy(cover[0]))
     axes[0, 0].set_title("Cover")
     axes[0, 0].axis("off")
@@ -100,46 +104,53 @@ def visualize_results(
     axes[0, 2].imshow(tensor_to_numpy(stego[0]))
     axes[0, 2].set_title("Stego (0°)")
     axes[0, 2].axis("off")
-    for j in range(3, cols):
-        axes[0, j].axis("off")
+    axes[0, 3].axis("off")  # Hide last column in this row
 
-    # --- Row 2: Rotated Stegos ---
-    axes[1, 0].axis("off")
-    for i, angle in enumerate(angles):
+    # --- Row 2: Rotated Stegos (Cardinal Angles) ---
+    for i, angle in enumerate(angles_to_plot):
         if i >= cols:
             break
-        axes[1, i].imshow(tensor_to_numpy(rotated_stegos[angle][0]))
-        axes[1, i].set_title(f"Stego ({angle}°)")
+        if angle in rotated_stegos:
+            axes[1, i].imshow(tensor_to_numpy(rotated_stegos[angle][0]))
+            axes[1, i].set_title(f"Stego ({angle}°)")
+        else:
+            axes[1, i].set_title(
+                f"Stego ({angle}°)\n(Not Found)"
+            )  # Should not happen if vis_angles are computed
         axes[1, i].axis("off")
-    for j in range(len(angles), cols):
+    for j in range(num_angles_plot, cols):
         axes[1, j].axis("off")
 
-    # --- Row 3: Recovered Secrets (Rotated - Before Alignment) ---
-    axes[2, 0].axis("off")
-    for i, angle in enumerate(angles):
+    # --- Row 3: Recovered Secrets Rotated (Cardinal Angles) ---
+    for i, angle in enumerate(angles_to_plot):
         if i >= cols:
             break
-        recovered_rotated_probs = torch.sigmoid(recovered_secrets_rotated[angle][0])
-        axes[2, i].imshow(
-            tensor_to_numpy(recovered_rotated_probs), cmap="gray", vmin=0, vmax=1
-        )
-        axes[2, i].set_title(f"Recovered Rotated ({angle}°)")
+        if angle in recovered_secrets_rotated:
+            recovered_rotated_probs = torch.sigmoid(recovered_secrets_rotated[angle][0])
+            axes[2, i].imshow(
+                tensor_to_numpy(recovered_rotated_probs), cmap="gray", vmin=0, vmax=1
+            )
+            axes[2, i].set_title(f"Recovered Rotated ({angle}°)")
+        else:
+            axes[2, i].set_title(f"Recovered Rotated ({angle}°)\n(Not Found)")
         axes[2, i].axis("off")
-    for j in range(len(angles), cols):
+    for j in range(num_angles_plot, cols):
         axes[2, j].axis("off")
 
-    # --- Row 4: Recovered Secrets (Aligned) ---
-    axes[3, 0].axis("off")
-    for i, angle in enumerate(angles):
+    # --- Row 4: Recovered Secrets Aligned (Cardinal Angles) ---
+    for i, angle in enumerate(angles_to_plot):
         if i >= cols:
             break
-        recovered_aligned_probs = torch.sigmoid(recovered_secrets_aligned[angle][0])
-        axes[3, i].imshow(
-            tensor_to_numpy(recovered_aligned_probs), cmap="gray", vmin=0, vmax=1
-        )
-        axes[3, i].set_title(f"Recovered Aligned ({angle}°)")
+        if angle in recovered_secrets_aligned:
+            recovered_aligned_probs = torch.sigmoid(recovered_secrets_aligned[angle][0])
+            axes[3, i].imshow(
+                tensor_to_numpy(recovered_aligned_probs), cmap="gray", vmin=0, vmax=1
+            )
+            axes[3, i].set_title(f"Recovered Aligned ({angle}°)")
+        else:
+            axes[3, i].set_title(f"Recovered Aligned ({angle}°)\n(Not Found)")
         axes[3, i].axis("off")
-    for j in range(len(angles), cols):
+    for j in range(num_angles_plot, cols):
         axes[3, j].axis("off")
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -151,7 +162,9 @@ def visualize_results(
 
 def test_rotation_robustness(cfg):
     """Test the model's robustness to rotations using BINARY secrets and inverse transform."""
-    print("--- Testing Rotation Robustness (Binary Secrets, Aligned Acc) ---")
+    print(
+        "--- Testing Rotation Robustness (Binary Secrets, 0-359 degrees, Aligned Acc) ---"
+    )
     device = get_device(cfg.training.device)
     ckpt_path = cfg.embed.checkpoint_path
 
@@ -168,13 +181,15 @@ def test_rotation_robustness(cfg):
     _ = load_checkpoint(ckpt_path, model, device=device)
     model.eval()
 
-    # --- Setup ---
-    rotation_angles = (
-        cfg.rotation.rotation_angles
-        if hasattr(cfg.rotation, "rotation_angles")
-        else [0, 90, 180, 270]
-    )
-    results = {angle: {"secret_acc_aligned": []} for angle in rotation_angles}
+    # Define the full range of angles to test
+    test_rotation_angles = list(range(0, 360, 15))
+    print(f"Testing angles: {test_rotation_angles}")
+
+    # Define the subset of angles for visualization (cardinal angles)
+    vis_angles = [0, 90, 180, 270]
+    print(f"Visualizing angles: {vis_angles}")
+
+    results = {angle: {"secret_acc_aligned": []} for angle in test_rotation_angles}
 
     sample_for_vis = None
     vis_batch_idx = 0
@@ -182,7 +197,7 @@ def test_rotation_robustness(cfg):
     # --- Evaluation Loop ---
     with torch.no_grad():
         for batch_idx, (cover, secret) in enumerate(
-            tqdm(val_loader, desc="Evaluating")
+            tqdm(val_loader, desc="Evaluating All Angles")
         ):
             cover, secret = cover.to(device), secret.to(device)
 
@@ -193,8 +208,8 @@ def test_rotation_robustness(cfg):
             current_batch_recovered_rotated = {}
             current_batch_recovered_aligned = {}
 
-            # Test each rotation angle
-            for angle in rotation_angles:
+            # Test each rotation angle in the full test list
+            for angle in test_rotation_angles:
                 # Rotate stego
                 rotated_stego = apply_rotation(stego, angle)
                 # Reveal from rotated stego
@@ -211,8 +226,8 @@ def test_rotation_robustness(cfg):
                 )
                 results[angle]["secret_acc_aligned"].append(secret_acc_aligned)
 
-                # Store tensors for visualization if it's the target batch
-                if batch_idx == vis_batch_idx:
+                # Store tensors for visualization ONLY if the angle is in vis_angles
+                if batch_idx == vis_batch_idx and angle in vis_angles:
                     current_batch_rotated_stegos[angle] = rotated_stego.clone()
                     current_batch_recovered_rotated[angle] = (
                         recovered_secret_rotated.clone()
@@ -221,21 +236,23 @@ def test_rotation_robustness(cfg):
                         recovered_secret_aligned_logits.clone()
                     )
 
-            # Finalize visualization sample storage
+            # Finalize visualization sample storage for the target batch
             if batch_idx == vis_batch_idx:
                 sample_for_vis = {
                     "cover": cover.clone(),
                     "secret": secret.clone(),
-                    "stego": stego.clone(),  # 0-degree stego
+                    "stego": stego.clone(),
                     "rotated_stegos": current_batch_rotated_stegos,
                     "recovered_secrets_rotated": current_batch_recovered_rotated,
                     "recovered_secrets_aligned": current_batch_recovered_aligned,
                 }
 
-    # --- Aggregate and Report Results ---
-    print("\n--- Rotation Robustness Results (Aligned Secret Accuracy) ---")
+    # --- Aggregate and Report Results (All Tested Angles) ---
+    print("\n--- Rotation Robustness Results (Aligned Secret Accuracy, 0-359°) ---")
     avg_results = {}
-    for angle in rotation_angles:
+    # Sort angles for cleaner reporting
+    sorted_angles = sorted(results.keys())
+    for angle in sorted_angles:
         avg_acc = (
             np.mean(results[angle]["secret_acc_aligned"])
             if results[angle]["secret_acc_aligned"]
@@ -244,12 +261,13 @@ def test_rotation_robustness(cfg):
         avg_results[f"{angle}_secret_acc_aligned"] = avg_acc
         print(f"Rotation {angle}°: Aligned Secret Acc = {avg_acc*100:.1f}%")
 
-    # --- Visualize Sample Results ---
+    # --- Visualize Sample Results (Using CARDINAL angles) ---
     if sample_for_vis:
         output_dir = Path(cfg.training.checkpoint_dir).parent / "experiments"
         output_dir.mkdir(parents=True, exist_ok=True)
+        # Update filename for the new visualization
         output_file = (
-            output_dir / f"rotation_test_binary_aligned_{Path(ckpt_path).stem}.png"
+            output_dir / f"rotation_test_binary_cardinal_vis_{Path(ckpt_path).stem}.png"
         )
 
         visualize_results(
@@ -259,7 +277,7 @@ def test_rotation_robustness(cfg):
             sample_for_vis["rotated_stegos"],
             sample_for_vis["recovered_secrets_rotated"],
             sample_for_vis["recovered_secrets_aligned"],
-            rotation_angles,
+            vis_angles,
             filename=str(output_file),
         )
 
@@ -268,7 +286,7 @@ def test_rotation_robustness(cfg):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Test Rotation Robustness (Binary Secrets, Aligned Acc)"
+        description="Test Full Range Rotation Robustness (Binary Secrets, Aligned Acc) with Cardinal Angle Visualization"
     )
     parser.add_argument(
         "--config",
