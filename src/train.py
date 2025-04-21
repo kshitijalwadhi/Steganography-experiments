@@ -25,44 +25,26 @@ from src.utils import (
 
 
 def apply_rotation(img, angle):
-    """Rotate image tensor by specified angle in degrees.
+    """Rotate image tensor by specified angle in degrees using interpolation.
 
-    Args:
-        img: Image tensor of shape (B, C, H, W)
-        angle: Rotation angle in degrees (0, 90, 180, or 270)
-
-    Returns:
-        Rotated image tensor of shape (B, C, H, W)
+    Uses NEAREST for robustness testing where appropriate, but could be adaptive.
     """
-    # Angles should be multiples of 90 for this TF function
-    # Ensure angle is float for TF.rotate
     angle = float(angle)
-    if angle % 90 != 0:
-        print(
-            f"Warning: Rotation angle {angle} is not a multiple of 90. Result might be unexpected."
-        )
+    # Note: Non-90 degree rotations will use interpolation (default BILINEAR)
+    # This might affect results differently compared to rotating stego later.
 
     if angle == 0:
         return img
     else:
-        # Interpolation mode might matter, NEAREST might be better for preserving edges?
-        # Default is BILINEAR
-        return TF.rotate(img, angle)
+        # Using default bilinear interpolation for now.
+        # Consider NEAREST if edges/binary data are critical and visual quality less so.
+        return TF.rotate(img, angle, interpolation=TF.InterpolationMode.BILINEAR)
 
 
 def get_inverse_rotation_angle(angle):
-    """Calculate the inverse rotation angle for 0, 90, 180, 270 degrees."""
-    if angle == 0:
-        return 0
-    elif angle == 90:
-        return 270  # -90 degrees
-    elif angle == 180:
-        return 180  # -180 degrees
-    elif angle == 270:
-        return 90  # -270 degrees
-    else:
-        # Fallback for non-cardinal angles (might not be perfect inverse)
-        return -angle
+    """Calculate the inverse rotation angle."""
+    # This works generally, including for non-cardinal angles.
+    return -angle
 
 
 def validate_epoch(model, val_loader, criterion_hide, criterion_reveal, device, cfg):
@@ -70,18 +52,23 @@ def validate_epoch(model, val_loader, criterion_hide, criterion_reveal, device, 
     model.eval()  # Set model to evaluation mode
     total_val_loss = 0.0
     total_val_loss_hide = 0.0
-    total_val_loss_reveal = 0.0  # For 0-degree rotation
+    total_val_loss_reveal = 0.0  # For 0-degree rotation equivalent
     total_val_psnr = 0.0
-    total_val_secret_mse = 0.0  # For 0-degree rotation after inverse transform
-    total_val_secret_acc = 0.0  # For 0-degree rotation after inverse transform
+    total_val_secret_mse = 0.0  # For 0-degree rotation equivalent after inverse transform
+    total_val_secret_acc = 0.0  # For 0-degree rotation equivalent after inverse transform
     num_batches = len(val_loader)
 
-    # For tracking rotation-specific metrics
+    # Check rotation config
+    use_rotation = hasattr(cfg, "rotation") and cfg.rotation.get("enabled", False)
+    apply_to = cfg.rotation.get("apply_to", "stego") if use_rotation else "stego"
     rotation_angles = (
         cfg.rotation.rotation_angles
-        if hasattr(cfg.rotation, "rotation_angles")
-        else [0, 90, 180, 270]
+        if use_rotation
+        else [0] # Only test 0 degrees if rotation is disabled
     )
+    print(f"Validation: Rotation enabled={use_rotation}, Apply to={apply_to}, Angles={rotation_angles}")
+
+
     rotation_metrics = {
         angle: {"secret_mse": [], "secret_acc": []} for angle in rotation_angles
     }
@@ -90,57 +77,70 @@ def validate_epoch(model, val_loader, criterion_hide, criterion_reveal, device, 
         for cover, secret in tqdm(val_loader, desc="Validating", leave=False):
             cover, secret = cover.to(device), secret.to(device)
 
-            # Generate stego image once per batch
-            stego = model.hide_secret(cover, secret)
-
-            # Calculate hiding metrics (cover vs stego)
-            loss_hide = criterion_hide(stego, cover)
+            # --- Calculate Hiding Loss (ALWAYS use original cover for consistency) ---
+            # Generate stego image from original cover for hide loss calculation consistency
+            stego_for_hideloss = model.hide_secret(cover, secret)
+            loss_hide = criterion_hide(stego_for_hideloss, cover)
             total_val_loss_hide += loss_hide.item()
             total_val_psnr += psnr(loss_hide)
 
             # Test each rotation angle
             for angle in rotation_angles:
-                # Apply rotation to stego image
-                rotated_stego = apply_rotation(stego, angle)
+                # --- Prepare input for RevealNet based on rotation mode ---
+                if apply_to == "cover":
+                    # Rotate cover, then embed
+                    rotated_cover = apply_rotation(cover, angle)
+                    # Embed secret into the *rotated* cover (HideNet now expects polar coords internally)
+                    stego_input = model.hide_secret(rotated_cover, secret)
+                else: # apply_to == "stego" (default/original behavior)
+                    # Embed into original cover first (already done as stego_for_hideloss)
+                    stego_base = stego_for_hideloss # Reuse the stego generated for hide loss
+                    # Rotate the resulting stego image
+                    stego_input = apply_rotation(stego_base, angle)
 
-                # Recover secret from rotated stego image
-                rec_secret_rotated = model.reveal_secret(rotated_stego)
+                # --- Reveal Secret ---
+                # Recover secret from the prepared input image
+                rec_secret_rotated = model.reveal_secret(stego_input)
 
-                # Apply INVERSE rotation to the recovered secret
+                # --- Align Revealed Secret ---
+                # Apply INVERSE rotation to the recovered secret to align with original
                 inv_angle = get_inverse_rotation_angle(angle)
                 rec_secret_aligned = apply_rotation(rec_secret_rotated, inv_angle)
 
-                # Calculate reveal metrics (MSE) between aligned recovered secret and original secret
+                # --- Calculate Reveal Metrics ---
+                # Compare aligned recovered secret and original secret
                 loss_reveal = criterion_reveal(rec_secret_aligned, secret)
-                secret_mse = loss_reveal.item()
-
-                # Calculate Bit Accuracy
+                # Use MSE for logging comparison regardless of loss type used for training
+                secret_mse = F.mse_loss(torch.sigmoid(rec_secret_aligned) if isinstance(criterion_reveal, nn.BCEWithLogitsLoss) else rec_secret_aligned, secret).item()
                 secret_acc = bit_accuracy(rec_secret_aligned, secret)
 
                 # Track angle-specific metrics
                 rotation_metrics[angle]["secret_mse"].append(secret_mse)
                 rotation_metrics[angle]["secret_acc"].append(secret_acc)
 
-                # For 0-degree rotation, include in overall metrics (loss_reveal is already calculated)
+                # For 0-degree rotation, update overall validation metrics
                 if angle == 0:
-                    total_val_loss_reveal += loss_reveal.item()
-                    total_val_secret_mse += secret_mse
-                    total_val_secret_acc += secret_acc
-                    # Overall loss uses the 0-degree reveal loss (after identity inverse rotation)
+                    # Use the specific loss_reveal calculated for angle=0
+                    loss_reveal_0_deg = criterion_reveal(rec_secret_aligned, secret)
+                    total_val_loss_reveal += loss_reveal_0_deg.item()
+                    total_val_secret_mse += secret_mse # Already calculated using angle 0
+                    total_val_secret_acc += secret_acc # Already calculated using angle 0
+                    # Overall loss uses the 0-degree reveal loss + the consistent hide loss
                     loss = (
-                        cfg.training.lam_hide * loss_hide
-                        + cfg.training.lam_reveal * loss_reveal
+                        cfg.training.lam_hide * loss_hide # Use consistent hide loss
+                        + cfg.training.lam_reveal * loss_reveal_0_deg # Use 0-degree reveal loss
                     )
                     total_val_loss += loss.item()
 
-    # Calculate averages for standard metrics (based on 0-degree rotation results)
-    avg_val_loss = total_val_loss / num_batches
-    avg_val_loss_hide = total_val_loss_hide / num_batches
-    avg_val_loss_reveal = total_val_loss_reveal / num_batches
-    avg_val_psnr = total_val_psnr / num_batches
-    avg_val_secret_mse = total_val_secret_mse / num_batches
-    avg_val_secret_acc = total_val_secret_acc / num_batches
-    avg_val_acc = 0  # Not applicable for image secrets
+    # --- Calculate Averages ---
+    # Average standard metrics (based on 0-degree rotation results / consistent hide loss)
+    avg_val_loss = total_val_loss / num_batches if num_batches > 0 else 0
+    avg_val_loss_hide = total_val_loss_hide / num_batches if num_batches > 0 else 0
+    avg_val_loss_reveal = total_val_loss_reveal / num_batches if num_batches > 0 else 0
+    avg_val_psnr = total_val_psnr / num_batches if num_batches > 0 else 0
+    avg_val_secret_mse = total_val_secret_mse / num_batches if num_batches > 0 else 0
+    avg_val_secret_acc = total_val_secret_acc / num_batches if num_batches > 0 else 0
+
 
     # Calculate averages for rotation-specific metrics
     for angle in rotation_angles:
@@ -160,10 +160,10 @@ def validate_epoch(model, val_loader, criterion_hide, criterion_reveal, device, 
     return (
         avg_val_loss,
         avg_val_loss_hide,
-        avg_val_loss_reveal,  # 0-degree reveal loss
+        avg_val_loss_reveal,  # 0-degree reveal loss (aligned)
         avg_val_psnr,
-        avg_val_secret_mse,  # 0-degree secret mse
-        avg_val_secret_acc,  # 0-degree secret acc
+        avg_val_secret_mse,  # 0-degree secret mse (aligned)
+        avg_val_secret_acc,  # 0-degree secret acc (aligned)
         rotation_metrics,  # Dict with avg_secret_mse and avg_secret_acc per angle
     )
 
@@ -187,8 +187,14 @@ def train(cfg):
     # --- Optimizer & Loss ---
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.lr)
     criterion_hide = nn.MSELoss()
-    # Use BCEWithLogitsLoss for binary secrets, as RevealNet outputs raw values (logits)
-    criterion_reveal = nn.BCEWithLogitsLoss()
+    # Use correct reveal loss based on config (expecting binary for rotation tests)
+    if cfg.data.secret_type == "binary":
+        criterion_reveal = nn.BCEWithLogitsLoss()
+        print("Using BCEWithLogitsLoss for reveal loss.")
+    else: # Assume MSE for image secrets or others
+        criterion_reveal = nn.MSELoss()
+        print("Using MSELoss for reveal loss.")
+
 
     # --- Checkpointing ---
     start_epoch = 0
@@ -201,10 +207,12 @@ def train(cfg):
 
     # --- Setup Rotation Parameters ---
     use_rotation = hasattr(cfg, "rotation") and cfg.rotation.get("enabled", False)
+    apply_to = cfg.rotation.get("apply_to", "stego") if use_rotation else "stego" # Default to rotating stego
     rotation_angles = cfg.rotation.rotation_angles if use_rotation else [0]
     rotation_probs = cfg.rotation.probs if use_rotation else [1.0]
     print(f"Rotation Augmentation during Training: {use_rotation}")
     if use_rotation:
+        print(f"Apply rotation to: {apply_to}")
         print(f"Angles: {rotation_angles}, Probs: {rotation_probs}")
 
     # --- Training Loop ---
@@ -227,37 +235,49 @@ def train(cfg):
 
             optimizer.zero_grad()
 
-            # Generate Stego Image
-            stego = model.hide_secret(cover, secret)
-
-            # Apply random rotation to stego image
+            # --- Apply Rotation based on config ---
             angle = 0
             if use_rotation:
                 angle_idx = random.choices(
                     range(len(rotation_angles)), weights=rotation_probs, k=1
                 )[0]
                 angle = rotation_angles[angle_idx]
-                rotated_stego = apply_rotation(stego, angle)
+
+            # --- Prepare inputs and Calculate Hide Loss ---
+            if use_rotation and apply_to == "cover":
+                # Rotate cover *before* embedding
+                rotated_cover = apply_rotation(cover, angle)
+                # Generate stego for reveal path using rotated cover
+                stego_input_for_reveal = model.hide_secret(rotated_cover, secret)
+                # Generate stego for hide loss path using ORIGINAL cover
+                # This requires a second pass through the hider but ensures hide loss is consistent.
+                with torch.no_grad(): # Don't need gradients for this stego used only for loss
+                    stego_for_hideloss = model.hide_secret(cover, secret)
+                loss_hide = criterion_hide(stego_for_hideloss, cover) # Compare stego from orig cover to orig cover
             else:
-                rotated_stego = stego  # No rotation
+                # Standard path (no rotation) or rotate stego *after* embedding
+                stego = model.hide_secret(cover, secret) # Embed in original cover
+                loss_hide = criterion_hide(stego, cover) # Hide loss vs original cover
+                if use_rotation: # and apply_to == "stego"
+                    stego_input_for_reveal = apply_rotation(stego, angle)
+                else: # No rotation
+                    stego_input_for_reveal = stego
 
-            # Reveal from potentially rotated stego image
-            rec_secret_rotated = model.reveal_secret(rotated_stego)
+            # --- Reveal and Align ---
+            # Reveal from the prepared input (potentially rotated stego or stego from rotated cover)
+            rec_secret_rotated = model.reveal_secret(stego_input_for_reveal)
 
-            # Apply INVERSE rotation to the recovered secret before calculating loss
+            # Apply INVERSE rotation to the recovered secret before calculating reveal loss
             inv_angle = get_inverse_rotation_angle(angle)
             rec_secret_aligned = apply_rotation(rec_secret_rotated, inv_angle)
 
-            # Calculate losses
-            loss_hide = criterion_hide(stego, cover)  # Compare original cover and stego
+            # --- Calculate Reveal Loss ---
             loss_reveal = criterion_reveal(
                 rec_secret_aligned, secret
             )  # Compare aligned recovered and original secret
-            current_secret_mse = loss_reveal.item()
-            # Calculate accuracy for monitoring training progress
-            current_secret_acc = bit_accuracy(rec_secret_aligned, secret)
 
-            # Combined loss for backpropagation
+            # --- Combine Losses for Backpropagation ---
+            # Note: loss_hide was calculated above based on the mode, always vs original cover if apply_to==cover
             loss = (
                 cfg.training.lam_hide * loss_hide
                 + cfg.training.lam_reveal * loss_reveal
@@ -266,12 +286,14 @@ def train(cfg):
             loss.backward()
             optimizer.step()
 
-            # --- Logging ---
+            # --- Logging Metrics ---
             current_loss = loss.item()
             current_loss_hide = loss_hide.item()
-            # Note: loss_reveal is already calculated on the aligned secret
             current_loss_reveal = loss_reveal.item()
-            current_psnr = psnr(loss_hide)
+            current_psnr = psnr(loss_hide) # PSNR is based on the calculated loss_hide
+            # Use MSE for comparable logging metric even if using BCE loss
+            current_secret_mse = F.mse_loss(torch.sigmoid(rec_secret_aligned) if isinstance(criterion_reveal, nn.BCEWithLogitsLoss) else rec_secret_aligned, secret).item()
+            current_secret_acc = bit_accuracy(rec_secret_aligned, secret)
 
             running_loss += current_loss
             running_loss_hide += current_loss_hide
@@ -288,9 +310,10 @@ def train(cfg):
                         "train/step_loss_hide": current_loss_hide,
                         "train/step_loss_reveal_aligned": current_loss_reveal,
                         "train/step_psnr": current_psnr,
-                        "train/step_secret_mse_aligned": current_secret_mse,
+                        "train/step_secret_mse_aligned": current_secret_mse, # Log comparable MSE
                         "train/step_secret_acc_aligned": current_secret_acc,
                         "train/rotation_angle_applied": angle,
+                        "train/rotation_applied_to": apply_to if use_rotation else "none",
                         "epoch": epoch,
                         "step": epoch * len(train_loader) + i,
                     }
@@ -305,16 +328,20 @@ def train(cfg):
                     "PSNR": f"{current_psnr:.2f}",
                     "MSEAln": f"{current_secret_mse:.4f}",  # Secret MSE (Aligned)
                     "AccAln": f"{current_secret_acc*100:.1f}%",  # Show aligned accuracy
+                    "RotAng": f"{angle:.0f}",
+                    "RotTo": apply_to if use_rotation else "N/A"
                 }
             )
 
         # --- Epoch End ---
-        avg_train_loss = running_loss / len(train_loader)
-        avg_train_loss_hide = running_loss_hide / len(train_loader)
-        avg_train_loss_reveal = running_loss_reveal / len(train_loader)
-        avg_train_psnr = running_psnr / len(train_loader)
-        avg_train_secret_mse = running_secret_mse / len(train_loader)
-        avg_train_secret_acc = running_secret_acc / len(train_loader)
+        num_batches = len(train_loader)
+        avg_train_loss = running_loss / num_batches if num_batches > 0 else 0
+        avg_train_loss_hide = running_loss_hide / num_batches if num_batches > 0 else 0
+        avg_train_loss_reveal = running_loss_reveal / num_batches if num_batches > 0 else 0
+        avg_train_psnr = running_psnr / num_batches if num_batches > 0 else 0
+        avg_train_secret_mse = running_secret_mse / num_batches if num_batches > 0 else 0
+        avg_train_secret_acc = running_secret_acc / num_batches if num_batches > 0 else 0
+
 
         print(
             f"Epoch {epoch} Train Summary: Loss={avg_train_loss:.4f}, Hide={avg_train_loss_hide:.4f}, Reveal(Aln)={avg_train_loss_reveal:.4f}, PSNR={avg_train_psnr:.2f}, SecMSE(Aln)={avg_train_secret_mse:.4f}, SecAcc(Aln)={avg_train_secret_acc*100:.1f}%"
@@ -326,40 +353,42 @@ def train(cfg):
                 model, val_loader, criterion_hide, criterion_reveal, device, cfg
             )
             (
-                val_loss,  # Based on 0-deg reveal loss
-                val_loss_hide,
-                val_loss_reveal,  # 0-deg reveal loss (aligned)
-                val_psnr,
-                val_secret_mse,  # 0-deg secret mse (aligned)
-                val_secret_acc,  # 0-deg secret acc (aligned)
-                rotation_metrics,  # Dict with avg_secret_mse and avg_secret_acc per angle
+                val_loss,           # Based on 0-deg reveal loss + consistent hide loss
+                val_loss_hide,      # Consistent hide loss (orig cover vs stego from orig cover)
+                val_loss_reveal,    # 0-deg reveal loss (aligned)
+                val_psnr,           # Based on consistent hide loss
+                val_secret_mse,     # 0-deg secret mse (aligned)
+                val_secret_acc,     # 0-deg secret acc (aligned)
+                rotation_metrics,   # Dict with avg_secret_mse and avg_secret_acc per angle
             ) = val_results
 
-            # Print validation summary (based on 0-degree metrics)
+            # Print validation summary (based on 0-degree metrics / consistent hide loss)
             print(
                 f"Epoch {epoch} Validation Summary: Loss={val_loss:.4f}, Hide={val_loss_hide:.4f}, Reveal(Aln)={val_loss_reveal:.4f}, PSNR={val_psnr:.2f}, SecMSE(Aln)={val_secret_mse:.4f}, SecAcc(Aln)={val_secret_acc*100:.1f}%"
             )
 
-            # Calculate and print average reveal MSE across all validation rotations
+            # Calculate and print average reveal MSE/Acc across all validation rotations
             avg_rot_secret_mse = 0
             avg_rot_secret_acc = 0
             valid_angles = 0
             print(
                 "Rotation-specific validation metrics (Aligned Secret MSE and Accuracy):"
             )
-            for angle in rotation_angles:
-                avg_mse = rotation_metrics[angle].get("avg_secret_mse", float("nan"))
-                avg_acc = rotation_metrics[angle].get("avg_secret_acc", float("nan"))
-                print(
-                    f"  Angle {angle}°: Secret MSE={avg_mse:.6f}, Secret Acc={avg_acc*100:.1f}%"
-                )
-                if not np.isnan(avg_mse):
-                    avg_rot_secret_mse += avg_mse
-                    avg_rot_secret_acc += avg_acc
-                    valid_angles += 1
-            if valid_angles > 0:
-                avg_rot_secret_mse /= valid_angles
-                avg_rot_secret_acc /= valid_angles
+            if rotation_metrics:
+                current_rotation_angles = list(rotation_metrics.keys())
+                for angle in current_rotation_angles:
+                    avg_mse = rotation_metrics[angle].get("avg_secret_mse", float("nan"))
+                    avg_acc = rotation_metrics[angle].get("avg_secret_acc", float("nan"))
+                    print(
+                        f"  Angle {angle}°: Secret MSE={avg_mse:.6f}, Secret Acc={avg_acc*100:.1f}%"
+                    )
+                    if not np.isnan(avg_mse):
+                        avg_rot_secret_mse += avg_mse
+                        avg_rot_secret_acc += avg_acc
+                        valid_angles += 1
+                if valid_angles > 0:
+                    avg_rot_secret_mse /= valid_angles
+                    avg_rot_secret_acc /= valid_angles
             print(
                 f"  Average across rotations: Secret MSE={avg_rot_secret_mse:.6f}, Secret Acc={avg_rot_secret_acc*100:.1f}%"
             )
@@ -371,7 +400,7 @@ def train(cfg):
                 "train/epoch_loss_hide": avg_train_loss_hide,
                 "train/epoch_loss_reveal_aligned": avg_train_loss_reveal,
                 "train/epoch_psnr": avg_train_psnr,
-                "train/epoch_secret_mse_aligned": avg_train_secret_mse,
+                "train/epoch_secret_mse_aligned": avg_train_secret_mse, # Log comparable MSE
                 "train/epoch_secret_acc_aligned": avg_train_secret_acc,
                 "val/epoch_loss": val_loss,
                 "val/epoch_loss_hide": val_loss_hide,
@@ -384,15 +413,17 @@ def train(cfg):
             }
 
             # Add rotation-specific metrics to wandb
-            for angle in rotation_angles:
-                if "avg_secret_mse" in rotation_metrics[angle]:
-                    log_dict[f"val/secret_mse_aligned_rot{angle}"] = rotation_metrics[
-                        angle
-                    ]["avg_secret_mse"]
-                if "avg_secret_acc" in rotation_metrics[angle]:
-                    log_dict[f"val/secret_acc_aligned_rot{angle}"] = rotation_metrics[
-                        angle
-                    ]["avg_secret_acc"]
+            if rotation_metrics:
+                current_rotation_angles = list(rotation_metrics.keys())
+                for angle in current_rotation_angles:
+                    if "avg_secret_mse" in rotation_metrics[angle]:
+                        log_dict[f"val/secret_mse_aligned_rot{angle}"] = rotation_metrics[
+                            angle
+                        ]["avg_secret_mse"]
+                    if "avg_secret_acc" in rotation_metrics[angle]:
+                        log_dict[f"val/secret_acc_aligned_rot{angle}"] = rotation_metrics[
+                            angle
+                        ]["avg_secret_acc"]
 
             wandb.log(log_dict)
 
@@ -432,7 +463,7 @@ def train(cfg):
                     "train/epoch_loss_hide": avg_train_loss_hide,
                     "train/epoch_loss_reveal_aligned": avg_train_loss_reveal,
                     "train/epoch_psnr": avg_train_psnr,
-                    "train/epoch_secret_mse_aligned": avg_train_secret_mse,
+                    "train/epoch_secret_mse_aligned": avg_train_secret_mse, # Log comparable MSE
                     "train/epoch_secret_acc_aligned": avg_train_secret_acc,
                 }
             )

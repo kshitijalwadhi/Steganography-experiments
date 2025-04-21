@@ -11,10 +11,11 @@ def to_polar(x):
         x: Tensor of shape (B, C, H, W)
 
     Returns:
-        Tensor of shape (B, C+4, H, W) with polar coordinates appended
+        Tensor of shape (B, 4, H, W) containing [r, theta, r^2, theta^2]
+        Note: Output channels = 4, not C+4. Concatenation happens later.
     """
     # Create coordinate grids
-    B, C, H, W = x.shape
+    B, _, H, W = x.shape # Use _ for C as we only need B, H, W
     h_center, w_center = H // 2, W // 2
 
     y_grid = torch.arange(H, device=x.device).view(-1, 1).repeat(1, W) - h_center
@@ -32,21 +33,18 @@ def to_polar(x):
     r = r / (max_r + 1e-8)  # Add epsilon for stability
     theta = (theta + torch.pi) / (2 * torch.pi)
 
-    # Create polar coordinate grid - using fixed 4 channels (r, theta, r^2, theta^2)
     # Calculate powers safely
     r_squared = r.pow(2)
     theta_squared = theta.pow(2)
 
     # Create 4-channel polar features [r, theta, r^2, theta^2]
-    # Ensure shapes match for stacking
     polar_grid = (
         torch.stack([r, theta, r_squared, theta_squared], dim=0)
         .unsqueeze(0)
         .repeat(B, 1, 1, 1)
     )
 
-    # Concatenate original features with polar coordinates
-    return torch.cat([x, polar_grid], dim=1)
+    return polar_grid # Return only the 4 polar channels
 
 
 # Network components
@@ -76,11 +74,14 @@ class PrepNet(nn.Module):
 
 
 class HideNet(nn.Module):
-    """Enhanced U-Net (can be rotation aware or not) to hide secret in cover image."""
+    """Enhanced U-Net (can be rotation aware or not) to hide secret in cover image.
 
-    def __init__(self, in_c=35):  # Should match 3 (cover) + prep_out_channels
+    Accepts cover, polar coordinates of cover, and prepared secret.
+    """
+
+    def __init__(self, in_c=35 + 4): # Should match 3 (cover) + 4 (polar) + prep_out_channels
         super().__init__()
-        print(f"Initializing HideNet with in_channels={in_c}")
+        print(f"Initializing HideNet with in_channels={in_c} (including polar)")
         # Encoder
         self.enc1 = conv_block(in_c, 64, 3)
         self.enc2 = conv_block(64, 128, 3, stride=2)
@@ -93,8 +94,9 @@ class HideNet(nn.Module):
             64, 3, 1
         )  # Output is always 3 channels (RGB stego image)
 
-    def forward(self, cover, pre_secret):
-        x = torch.cat([cover, pre_secret], dim=1)
+    def forward(self, cover, polar_grid_cover, pre_secret):
+        # Concatenate cover, its polar grid, and the prepared secret
+        x = torch.cat([cover, polar_grid_cover, pre_secret], dim=1)
         e1 = self.enc1(x)
         e2 = self.enc2(e1)
         b = self.bottleneck(e2)
@@ -145,8 +147,12 @@ class RotationInvariantRevealNet(nn.Module):
         # Initial feature extraction from stego image (B, 3, H, W) -> (B, 32, H, W)
         features = self.initial_conv(stego)
 
-        # Add polar coordinate information (B, 32, H, W) -> (B, 36, H, W)
-        polar_features = to_polar(features)
+        # Add polar coordinate information to features (B, 32, H, W) -> (B, 36, H, W)
+        stego_polar_grid = to_polar(features) # Use features? Or original stego?
+                                             # Original RevealNet paper used polar on input image. Let's try polar on stego input.
+        stego_polar_grid_input = to_polar(stego) # Get polar coords from the input stego itself.
+        polar_features = torch.cat([features, stego_polar_grid_input], dim=1)
+
 
         # Process through polar branch (B, 36, H, W) -> (B, 64, H, W)
         polar_branch_out = self.polar_branch(polar_features)
@@ -170,7 +176,7 @@ class RotationInvariantRevealNet(nn.Module):
 
 
 class SteganoModel(nn.Module):
-    """Full steganography model using RotationInvariantRevealNet."""
+    """Full steganography model using potentially rotation-aware components."""
 
     def __init__(self, cfg):
         super().__init__()
@@ -190,18 +196,22 @@ class SteganoModel(nn.Module):
         reveal_out_c = secret_in_c
 
         prep_out_c = cfg.model.prep_out_channels
-        # Ensure HideNet input channel config matches reality: 3 (cover) + prep_out_c
-        expected_hide_in_c = 3 + prep_out_c
-        if cfg.model.hide_in_channels != expected_hide_in_c:
+        # HideNet input channels: 3 (cover) + 4 (polar grid) + prep_out_c
+        expected_hide_in_c = 3 + 4 + prep_out_c
+
+        # If config has hide_in_channels, check if it matches the expected value
+        config_hide_in_c = cfg.model.get("hide_in_channels", None)
+        if config_hide_in_c is not None and config_hide_in_c != expected_hide_in_c:
             print(
-                f"Warning: Config mismatch! model.hide_in_channels ({cfg.model.hide_in_channels}) != 3 + model.prep_out_channels ({expected_hide_in_c}). Using calculated value {expected_hide_in_c}."
+                f"Warning: Config mismatch! model.hide_in_channels ({config_hide_in_c}) != 3 (cover) + 4 (polar) + model.prep_out_channels ({prep_out_c}) = {expected_hide_in_c}. Using calculated value {expected_hide_in_c}."
             )
             hide_in_c = expected_hide_in_c
         else:
-            hide_in_c = cfg.model.hide_in_channels
+            # Use expected value if config doesn't specify or matches
+            hide_in_c = expected_hide_in_c
 
         print(
-            f"Initializing SteganoModel: PrepNet in={secret_in_c}, RevealNet out={reveal_out_c}, HideNet in={hide_in_c}"
+            f"Initializing SteganoModel: PrepNet in={secret_in_c}, RevealNet out={reveal_out_c}, HideNet in={hide_in_c} (incl. polar)"
         )
 
         self.prep = PrepNet(in_c=secret_in_c, out_c=prep_out_c)
@@ -212,16 +222,23 @@ class SteganoModel(nn.Module):
     def forward(self, cover, secret):
         """Standard forward pass: Cover + Secret -> Stego -> Recovered Secret"""
         pre = self.prep(secret)
-        stego = self.hider(cover, pre)
+        # Calculate polar grid for the cover
+        cover_polar_grid = to_polar(cover)
+        # Pass cover, its polar grid, and prepared secret to hider
+        stego = self.hider(cover, cover_polar_grid, pre)
         recovered = self.reveal(stego)  # Reveal from non-rotated stego
         return stego, recovered
 
-    # Add separate methods for testing/training steps if needed
     def hide_secret(self, cover, secret):
+        """Generate stego image, including polar coords for HideNet."""
         pre = self.prep(secret)
-        stego = self.hider(cover, pre)
+        # Calculate polar grid for the input cover (could be rotated or not)
+        cover_polar_grid = to_polar(cover)
+        # Pass cover, its polar grid, and prepared secret to hider
+        stego = self.hider(cover, cover_polar_grid, pre)
         return stego
 
     def reveal_secret(self, stego):
+        """Reveal secret from stego image using RotationInvariantRevealNet."""
         recovered = self.reveal(stego)
         return recovered

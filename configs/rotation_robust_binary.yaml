@@ -2,8 +2,8 @@
 data:
   root_dir: ./data
   cover_dataset: CIFAR10
-  secret_type: binary  # Switch back to binary secrets
-  secret_dataset: null # Not applicable for binary
+  secret_type: image  # Switch back to binary secrets
+  secret_dataset: MNIST # Not applicable for binary
   image_folder_cover: null
   image_folder_secret: null 
   image_size: 64
@@ -20,11 +20,11 @@ model:
 # Training Configuration
 training:
   batch_size: 32
-  epochs: 2 # Adjust as needed
+  epochs: 1 # Adjust as needed
   lr: 1e-4
-  lam_hide: 0.75  # Weight for hiding loss (MSE)
+  lam_hide: 2.0  # Weight for hiding loss (MSE)
   lam_reveal: 1.0  # Weight for reveal loss (BCEWithLogitsLoss for binary, applied to aligned secret)
-  checkpoint_dir: ./outputs/checkpoints/rotation-robust-binary
+  checkpoint_dir: ./outputs/checkpoints/rotation-robust-mnist
   checkpoint_freq: 5  # Save every N epochs
   val_freq: 1  # Validate every N epochs
   device: auto  # Options: auto, cuda, cpu
@@ -32,7 +32,7 @@ training:
     enabled: true
     project: "deep-steganography-rotation"
     entity: null # Your wandb username or team name
-    run_name: "rotation-robust-binary-inv-v1"
+    run_name: "rotation-robust-mnist-inv-v1"
 
 # Rotation Training Configuration
 rotation:
@@ -40,6 +40,7 @@ rotation:
   # Probability of applying each rotation during training
   probs: [0.25, 0.25, 0.25, 0.25]  # [0°, 90°, 180°, 270°]
   rotation_angles: [0, 90, 180, 270]
+  apply_to: cover
 
 # Evaluation Configuration
 evaluation:
@@ -54,9 +55,9 @@ embed:
   secret_image: null # Binary secrets generated on the fly
   output_image: ./outputs/stego_rotation_robust_binary.png
   # Checkpoint path used by test_rotation and experiment_rotation modes
-  checkpoint_path: ./outputs/checkpoints/rotation-robust-binary/best_checkpoint.pth 
+  checkpoint_path: ./outputs/checkpoints/rotation-robust-mnist/best_checkpoint.pth 
 
 extract:
   stego_image: null
   output_secret: ./outputs/revealed_secret_rotation_robust_binary.png
-  checkpoint_path: ./outputs/checkpoints/rotation-robust-binary/best_checkpoint.pth 
+  checkpoint_path: ./outputs/checkpoints/rotation-robust-mnist/best_checkpoint.pth 
