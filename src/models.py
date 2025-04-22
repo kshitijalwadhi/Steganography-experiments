@@ -1,6 +1,16 @@
 import torch
 import torch.nn as nn
 
+# Try importing escnn and handle potential import error
+try:
+    import escnn.gspaces
+    import escnn.nn
+    from escnn.nn import GeometricTensor
+    ESCnn_available = True
+except ImportError:
+    ESCnn_available = False
+    print("WARNING: escnn library not found. EquivariantRevealNet will not be available.")
+
 
 # Network components
 def conv_block(in_c, out_c, kernel=3, stride=1):
@@ -55,6 +65,7 @@ class HideNet(nn.Module):
         return torch.sigmoid(self.out_conv(d1))
 
 
+# Standard RevealNet (keep for comparison or fallback)
 class RevealNet(nn.Module):
     """Network to reveal the hidden secret from a stego image."""
 
@@ -76,10 +87,83 @@ class RevealNet(nn.Module):
         )  # logits for binary, sigmoid/tanh for image? Output raw for now.
 
 
+# Equivariant RevealNet using escnn (C4 Rotation Equivariance)
+class EquivariantRevealNet(nn.Module):
+    def __init__(self, out_c=1, channels=32):
+        super().__init__()
+
+        if not ESCnn_available:
+             raise RuntimeError("Cannot initialize EquivariantRevealNet: escnn library not installed.")
+
+        self.channels = channels
+        self.out_channels = out_c
+
+        # Define the symmetry group: C4 rotations on R2
+        self.gspace = escnn.gspaces.rot2dOnR2(N=4)
+
+        # Define the input field type: 3 trivial fields (standard RGB image)
+        self.in_type = escnn.nn.FieldType(self.gspace, [self.gspace.trivial_repr] * 3)
+
+        # Define hidden field types using regular representations
+        # Number of output channels needs to be scaled by group order for regular repr?
+        # Let's try keeping channels similar to original for now.
+        feat_type_hid1 = escnn.nn.FieldType(self.gspace, [self.gspace.regular_repr] * channels)
+        feat_type_hid2 = escnn.nn.FieldType(self.gspace, [self.gspace.regular_repr] * (channels * 2))
+
+        # Define the output field type: MUST be invariant (trivial representation)
+        # Since we want a single scalar output per pixel for binary secret
+        self.out_type = escnn.nn.FieldType(self.gspace, [self.gspace.trivial_repr] * self.out_channels)
+
+        # Build the equivariant network layers
+        self.block1 = escnn.nn.SequentialModule(
+            escnn.nn.R2Conv(self.in_type, feat_type_hid1, kernel_size=5, padding=2, bias=False),
+            escnn.nn.InnerBatchNorm(feat_type_hid1),
+            escnn.nn.ReLU(feat_type_hid1, inplace=False)
+        )
+        self.block2 = escnn.nn.SequentialModule(
+            escnn.nn.R2Conv(feat_type_hid1, feat_type_hid1, kernel_size=3, padding=1, bias=False),
+            escnn.nn.InnerBatchNorm(feat_type_hid1),
+            escnn.nn.ReLU(feat_type_hid1, inplace=False)
+        )
+        self.block3 = escnn.nn.SequentialModule(
+            escnn.nn.R2Conv(feat_type_hid1, feat_type_hid2, kernel_size=3, padding=1, bias=False),
+            escnn.nn.InnerBatchNorm(feat_type_hid2),
+            escnn.nn.ReLU(feat_type_hid2, inplace=False)
+        )
+        self.block4 = escnn.nn.SequentialModule(
+            escnn.nn.R2Conv(feat_type_hid2, feat_type_hid2, kernel_size=3, padding=1, bias=False),
+            escnn.nn.InnerBatchNorm(feat_type_hid2),
+            escnn.nn.ReLU(feat_type_hid2, inplace=False)
+        )
+
+        # Final layer: Conv + Group Pooling to produce invariant output
+        self.final_conv = escnn.nn.R2Conv(feat_type_hid2, self.out_type, kernel_size=1, bias=True)
+        # GroupPooling aggregates over the group dimension, resulting in an invariant field.
+        # self.pool = escnn.nn.GroupPooling(feat_type_hid2) # Alternative: pool before final conv? No, final conv needs to map to out_type.
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Wrap input tensor in a GeometricTensor
+        x_geom = escnn.nn.GeometricTensor(x, self.in_type)
+
+        # Pass through equivariant blocks
+        out1 = self.block1(x_geom)
+        out2 = self.block2(out1)
+        out3 = self.block3(out2)
+        out4 = self.block4(out3)
+
+        # Final convolution to get invariant output type
+        out5 = self.final_conv(out4)
+
+        # The output of final_conv should already be of the invariant out_type.
+        # Extract the torch.Tensor from the GeometricTensor.
+        return out5.tensor
+
+
 class SteganoModel(nn.Module):
     """Full steganography model combining prep, hide, and reveal networks."""
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, use_equivariant_reveal=True): # Add flag
         super().__init__()
         secret_in_c = 3 if cfg.data.secret_type == "image" else 1
         reveal_out_c = 3 if cfg.data.secret_type == "image" else 1
@@ -88,7 +172,18 @@ class SteganoModel(nn.Module):
 
         self.prep = PrepNet(in_c=secret_in_c, out_c=prep_out_c)
         self.hider = HideNet(in_c=hide_in_c)
-        self.reveal = RevealNet(out_c=reveal_out_c)
+
+        # Conditionally use EquivariantRevealNet
+        if use_equivariant_reveal and ESCnn_available:
+            print("Using Equivariant RevealNet (escnn)")
+            # TODO: Consider passing channel size from config?
+            self.reveal = EquivariantRevealNet(out_c=reveal_out_c)
+        else:
+            if use_equivariant_reveal and not ESCnn_available:
+                print("WARNING: Requested EquivariantRevealNet but escnn is not installed. Falling back to standard RevealNet.")
+            else:
+                 print("Using Standard RevealNet")
+            self.reveal = RevealNet(out_c=reveal_out_c)
 
     def forward(self, cover, secret):
         pre = self.prep(secret)

@@ -21,10 +21,13 @@ training:
   lr: 1e-4
   lam_hide: 0.75 # Weight for hiding loss (MSE)
   lam_reveal: 1.0 # Weight for reveal loss (BCE or MSE)
-  checkpoint_dir: ./outputs/checkpoints
+  checkpoint_dir: ./outputs/checkpoints/default
   checkpoint_freq: 1 # Save every N epochs
   val_freq: 1 # Validate every N epochs
   device: auto # Options: auto, cuda, cpu
+  rotation_robustness:
+    enabled: true
+    lam_rotate: 2.0
   wandb:
     enabled: true
     project: "deep-steganography"
@@ -41,7 +44,7 @@ embed:
   cover_image: null
   secret_image: null # Or use random binary if secret_type is binary
   output_image: ./outputs/stego.png
-  checkpoint_path: ./outputs/checkpoints/best_checkpoint.pth
+  checkpoint_path: ./outputs/checkpoints/default/best_checkpoint.pth
 
 extract:
   stego_image: null
