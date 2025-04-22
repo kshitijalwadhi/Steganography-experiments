@@ -206,20 +206,75 @@ def test_transform_robustness(cfg):
     print(f"Total transformation combinations to test: {len(transform_combinations)}")
 
     # --- Define Transformations for Visualization --- #
-    # Select a subset for visualization (e.g., identity, max rotation, max translate, min/max scale)
+    # Select a varied subset of transformations for visualization
     vis_transforms = []
-    vis_transforms.append((0.0, 1.0, [0, 0]))  # Identity
-    if max(test_angles) > 0:
-        vis_transforms.append((max(test_angles), 1.0, [0, 0]))
+    
+    # 1. Identity transformation (no change)
+    vis_transforms.append((0.0, 1.0, [0, 0]))
+    
+    # 2-3. Pure rotations (different angles)
+    if len(test_angles) >= 2:
+        # Add 90° rotation if available
+        if 90.0 in test_angles:
+            vis_transforms.append((90.0, 1.0, [0, 0]))
+        # Add 180° rotation if available
+        if 180.0 in test_angles:
+            vis_transforms.append((180.0, 1.0, [0, 0]))
+    
+    # 4-5. Pure scaling (min and max)
+    if len(test_scales) >= 2:
+        # Minimum scale
+        if min(test_scales) < 1.0:
+            vis_transforms.append((0.0, min(test_scales), [0, 0]))
+        # Maximum scale
+        if max(test_scales) > 1.0:
+            vis_transforms.append((0.0, max(test_scales), [0, 0]))
+    
+    # 6-7. Pure translations (different directions)
     if max_shift > 0:
-        vis_transforms.append((0.0, 1.0, [max_shift, 0]))  # Max +X shift
-    if min(test_scales) < 1.0:
-        vis_transforms.append((0.0, min(test_scales), [0, 0]))
-    if max(test_scales) > 1.0:
-        vis_transforms.append((0.0, max(test_scales), [0, 0]))
+        # X-axis translation
+        vis_transforms.append((0.0, 1.0, [max_shift, 0]))
+        # Y-axis translation
+        vis_transforms.append((0.0, 1.0, [0, max_shift]))
+    
+    # 8-10. Combined transformations
+    # Rotation + Scale
+    if len(test_angles) >= 2 and len(test_scales) >= 2:
+        if 90.0 in test_angles and min(test_scales) < 1.0:
+            vis_transforms.append((90.0, min(test_scales), [0, 0]))
+    
+    # Rotation + Translation
+    if len(test_angles) >= 2 and max_shift > 0:
+        if 90.0 in test_angles:
+            vis_transforms.append((90.0, 1.0, [max_shift, max_shift]))
+    
+    # Scale + Translation
+    if len(test_scales) >= 2 and max_shift > 0:
+        if max(test_scales) > 1.0:
+            vis_transforms.append((0.0, max(test_scales), [max_shift, 0]))
+    
+    # 11. All three: Rotation + Scale + Translation (if all are being tested)
+    if len(test_angles) >= 2 and len(test_scales) >= 2 and max_shift > 0:
+        if 180.0 in test_angles and max(test_scales) > 1.0:
+            vis_transforms.append((180.0, max(test_scales), [max_shift, max_shift]))
+    
     # Ensure unique tuples and convert translation list to tuple for dict keys
     vis_transform_keys = list(set((a, s, tuple(t)) for a, s, t in vis_transforms))
+    # Limit to a reasonable number to avoid overcrowding (max 10-12 transforms)
+    if len(vis_transform_keys) > 12:
+        vis_transform_keys = vis_transform_keys[:12]
+    
+    # IMPORTANT: Make sure all visualization transformations are included in the test combinations
+    # Add any visualization transformations that aren't already in the test combinations
+    existing_transform_keys = set((a, s, tuple(t)) for a, s, t in transform_combinations)
+    for vis_key in vis_transform_keys:
+        if vis_key not in existing_transform_keys:
+            angle, scale, trans_tuple = vis_key
+            transform_combinations.append((angle, scale, list(trans_tuple)))
+            print(f"Added visualization transformation to test combinations: {vis_key}")
+    
     print(f"Visualizing transformations: {vis_transform_keys}")
+    print(f"Total visualization examples: {len(vis_transform_keys)}")
 
     # --- Initialize Results Storage --- #
     # Use tuple (angle, scale, tx, ty) as key
@@ -231,7 +286,11 @@ def test_transform_robustness(cfg):
         }
 
     sample_for_vis = None
-    vis_batch_idx = 0  # Visualize the first batch
+    vis_batch_idx = 1  # Visualize the second batch for more variety
+
+    # Store visualization data for each batch until we find a good one
+    all_vis_samples = []
+    max_vis_samples = 3  # Store data for first 3 batches to choose from
 
     # Determine interpolation mode for transformations
     interp_mode = (
@@ -245,12 +304,17 @@ def test_transform_robustness(cfg):
         for batch_idx, (cover, secret) in enumerate(
             tqdm(val_loader, desc="Evaluating Transforms")
         ):
+            if batch_idx >= max_vis_samples:
+                # Skip visualization data collection after max_vis_samples
+                # but continue with the evaluation
+                pass
+            
             cover, secret = cover.to(device), secret.to(device)
 
             # Generate stego image (identity transform)
             stego = model.hide_secret(cover, secret)
 
-            # Store tensors for the visualization sample if this is the target batch
+            # Store tensors for the visualization sample if within first few batches
             current_batch_transformed_stegos = {}
             current_batch_recovered_transformed = {}
             current_batch_recovered_aligned = {}
@@ -284,8 +348,8 @@ def test_transform_robustness(cfg):
                     secret_acc_aligned
                 )
 
-                # Store tensors for visualization if this batch/transform is selected
-                if batch_idx == vis_batch_idx and transform_key in vis_transform_keys:
+                # Store tensors for visualization if within first few batches
+                if batch_idx < max_vis_samples and transform_key in vis_transform_keys:
                     current_batch_transformed_stegos[transform_key] = (
                         transformed_stego.clone()
                     )
@@ -296,16 +360,37 @@ def test_transform_robustness(cfg):
                         recovered_secret_aligned_logits.clone()
                     )
 
-            # Finalize visualization sample storage for the target batch
-            if batch_idx == vis_batch_idx:
-                sample_for_vis = {
+            # Finalize visualization sample storage for each batch within the first few
+            if batch_idx < max_vis_samples:
+                # Check if this batch has all the required transformations
+                missing_transforms = set(vis_transform_keys) - set(current_batch_transformed_stegos.keys())
+                coverage = len(current_batch_transformed_stegos) / len(vis_transform_keys)
+                
+                all_vis_samples.append({
+                    "batch_idx": batch_idx,
+                    "coverage": coverage,
+                    "missing": len(missing_transforms),
                     "cover": cover.clone(),
                     "secret": secret.clone(),
-                    "stego_identity": stego.clone(),  # Store the untransformed stego
+                    "stego_identity": stego.clone(),
                     "transformed_stegos": current_batch_transformed_stegos,
                     "recovered_secrets_transformed": current_batch_recovered_transformed,
                     "recovered_secrets_aligned": current_batch_recovered_aligned,
-                }
+                })
+                
+                print(f"Batch {batch_idx}: Visualization coverage {coverage*100:.1f}% ({len(current_batch_transformed_stegos)}/{len(vis_transform_keys)} transforms)")
+
+    # Select the best sample for visualization (most complete)
+    if all_vis_samples:
+        # Sort by coverage (highest first) and then by batch index
+        all_vis_samples.sort(key=lambda x: (-x["coverage"], x["batch_idx"]))
+        sample_for_vis = all_vis_samples[0]
+        vis_batch_idx = sample_for_vis["batch_idx"]
+        print(f"Selected batch {vis_batch_idx} for visualization with {sample_for_vis['coverage']*100:.1f}% coverage")
+        
+        # Update visualization keys to only include those actually present in the sample
+        available_keys = set(sample_for_vis["transformed_stegos"].keys())
+        vis_transform_keys = [k for k in vis_transform_keys if k in available_keys]
 
     # --- Aggregate and Report Results --- #
     print("\n--- Transformation Robustness Results (Secret Bit Accuracy) ---")
