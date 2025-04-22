@@ -10,6 +10,7 @@ Includes visualization for a subset of specified transformations.
 import argparse
 import itertools
 from pathlib import Path
+from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,6 +19,7 @@ import torch.nn.functional as F
 from torchvision.transforms import \
     InterpolationMode  # Import InterpolationMode
 from tqdm import tqdm
+import math
 
 from src.datasets import get_dataloaders
 from src.models import SteganoModel
@@ -37,6 +39,18 @@ def tensor_to_numpy(tensor):
     elif len(tensor.shape) == 2:
         return tensor.numpy()
     return tensor.numpy()
+
+
+def calculate_psnr(img1, img2):
+    """Calculate PSNR between two image tensors.
+    Higher values indicate better image quality/similarity (max is infinity for identical images).
+    """
+    mse = F.mse_loss(img1, img2).item()
+    if mse == 0:
+        return float('inf')
+    max_pixel = 1.0
+    psnr = 20 * math.log10(max_pixel / math.sqrt(mse))
+    return psnr
 
 
 def visualize_transform_results(
@@ -209,10 +223,12 @@ def test_transform_robustness(cfg):
 
     # --- Initialize Results Storage --- #
     # Use tuple (angle, scale, tx, ty) as key
-    results = {
-        (angle, scale, tuple(translate)): {"secret_acc_aligned": []}
-        for angle, scale, translate in transform_combinations
-    }
+    results = {}
+    for angle, scale, translate in transform_combinations:
+        transform_key = (angle, scale, tuple(translate))
+        results[transform_key] = {
+            "secret_acc_aligned": []
+        }
 
     sample_for_vis = None
     vis_batch_idx = 0  # Visualize the first batch
@@ -260,25 +276,13 @@ def test_transform_robustness(cfg):
                     interpolation=interp_mode,
                 )
 
-                # Calculate Accuracy using aligned logits and original secret
-                # Adapt metric calculation if needed (e.g., MSE for image secrets)
-                if cfg.data.secret_type == "binary":
-                    secret_acc_aligned = bit_accuracy(
-                        recovered_secret_aligned_logits, secret
-                    )
-                    if transform_key in results:
-                        results[transform_key]["secret_acc_aligned"].append(
-                            secret_acc_aligned
-                        )
-                    else:  # Should not happen with pre-initialization
-                        print(
-                            f"Warning: Transform key {transform_key} not found in results."
-                        )
-                # Add MSE calculation here if needed for image secrets
-                # elif cfg.data.secret_type == "image":
-                #     secret_mse_aligned = F.mse_loss(recovered_secret_aligned_logits, secret).item()
-                #     if transform_key in results:
-                #          results[transform_key]["secret_mse_aligned"].append(secret_mse_aligned)
+                # Calculate bit accuracy for all secret types (binary and image)
+                secret_acc_aligned = bit_accuracy(
+                    recovered_secret_aligned_logits, secret
+                )
+                results[transform_key]["secret_acc_aligned"].append(
+                    secret_acc_aligned
+                )
 
                 # Store tensors for visualization if this batch/transform is selected
                 if batch_idx == vis_batch_idx and transform_key in vis_transform_keys:
@@ -304,24 +308,84 @@ def test_transform_robustness(cfg):
                 }
 
     # --- Aggregate and Report Results --- #
-    print("\n--- Transformation Robustness Results (Aligned Secret Accuracy) ---")
+    print("\n--- Transformation Robustness Results (Secret Bit Accuracy) ---")
     avg_results = {}
-    # Sort results for cleaner reporting (optional, based on angle/scale/etc.)
-    # Sorting complex keys might be tricky, just iterate through dict for now
+    
+    # Organize results by angle and scale for better presentation
+    organized_results = defaultdict(lambda: defaultdict(dict))
+    angle_averages = defaultdict(list)
+    scale_averages = defaultdict(list)
+    translation_averages = defaultdict(list)
+    
+    # First, calculate averages and organize by angle -> scale -> translation
     for transform_key, metrics in results.items():
         angle, scale, translate = transform_key
         if metrics["secret_acc_aligned"]:
             avg_acc = np.mean(metrics["secret_acc_aligned"])
-            metric_key_name = (
-                f"acc_A{angle:.0f}_S{scale:.2f}_T({translate[0]},{translate[1]})"
-            )
-            avg_results[metric_key_name] = avg_acc
-            print(
-                f"Transform (A={angle:.0f}, S={scale:.2f}, T={translate}): Aligned Secret Acc = {avg_acc*100:.1f}%"
-            )
-        # Add reporting for MSE if implemented
-        # elif metrics.get("secret_mse_aligned"):
-        # ... report MSE ...
+            avg_results[f"acc_A{angle:.0f}_S{scale:.2f}_T({translate[0]},{translate[1]})"] = avg_acc
+            
+            # Store in our organized structure
+            organized_results[angle][scale][translate] = avg_acc
+            
+            # Collect for averages
+            angle_averages[angle].append(avg_acc)
+            scale_averages[scale].append(avg_acc)
+            translation_averages[translate].append(avg_acc)
+    
+    # Print results grouped by angle and scale
+    print("\n=== RESULTS BY ROTATION ANGLE ===")
+    for angle in sorted(organized_results.keys()):
+        angle_avg = np.mean(angle_averages[angle])
+        print(f"\n>> ANGLE {angle}° (Avg: {angle_avg*100:.1f}%)")
+        
+        for scale in sorted(organized_results[angle].keys()):
+            scale_results = organized_results[angle][scale]
+            scale_values = list(scale_results.values())
+            scale_in_angle_avg = np.mean(scale_values)
+            
+            print(f"  Scale {scale:.2f} (Avg: {scale_in_angle_avg*100:.1f}%)")
+            
+            # Format the translation results in a tabular-like way
+            trans_results = []
+            for translate, acc in scale_results.items():
+                trans_str = f"T({translate[0]:2d},{translate[1]:2d}): {acc*100:.1f}%"
+                trans_results.append(trans_str)
+            
+            # Display translations in a compact way (multiple per line)
+            for i in range(0, len(trans_results), 3):
+                chunk = trans_results[i:i+3]
+                print(f"    {' | '.join(chunk)}")
+    
+    # Print summary by scale factor
+    print("\n=== SUMMARY BY SCALE FACTOR ===")
+    for scale in sorted(scale_averages.keys()):
+        scale_avg = np.mean(scale_averages[scale])
+        print(f"Scale {scale:.2f}: Average Accuracy = {scale_avg*100:.1f}%")
+    
+    # Print summary by translation factor
+    print("\n=== SUMMARY BY TRANSLATION FACTOR ===")
+    # Define a function to sort translations for logical ordering
+    def translation_sort_key(trans):
+        # Sort by Euclidean distance from origin, then by quadrant
+        tx, ty = trans
+        distance = tx**2 + ty**2
+        # Center point first, then axes points, then others
+        if tx == 0 and ty == 0:
+            priority = 0
+        elif tx == 0 or ty == 0:
+            priority = 1
+        else:
+            priority = 2
+        return (priority, distance, tx, ty)
+    
+    for translate in sorted(translation_averages.keys(), key=translation_sort_key):
+        trans_avg = np.mean(translation_averages[translate])
+        print(f"Translation ({translate[0]:2d},{translate[1]:2d}): Average Accuracy = {trans_avg*100:.1f}%")
+    
+    # Print overall average
+    all_accs = [acc for sublist in angle_averages.values() for acc in sublist]
+    overall_avg = np.mean(all_accs)
+    print(f"\n=== OVERALL AVERAGE: {overall_avg*100:.1f}% ===")
 
     # --- Visualize Sample Results --- #
     if sample_for_vis:
@@ -370,9 +434,5 @@ if __name__ == "__main__":
     # Add config overrides from command-line args if implemented
     # if args.test_angles: cfg.evaluation.test_angles = args.test_angles
     # ... etc ...
-
-    # Optionally add a check for secret type if the script is specific (e.g., binary only)
-    # if cfg.data.secret_type != "binary":
-    #     raise ValueError("This script currently expects binary secrets for accuracy calculation.")
 
     test_transform_robustness(cfg)

@@ -2,8 +2,8 @@
 data:
   root_dir: ./data
   cover_dataset: CIFAR10
-  secret_type: binary  # Switch back to binary secrets
-  secret_dataset: null # Not applicable for binary
+  secret_type: image  # Switch back to binary secrets
+  secret_dataset: MNIST # Not applicable for binary
   image_folder_cover: null
   image_folder_secret: null 
   image_size: 64
@@ -12,19 +12,19 @@ data:
 
 # Model Configuration
 model:
-  prep_out_channels: 32
-  # HideNet input channels: 3 (cover) + prep_out_channels (32) = 35
-  hide_in_channels: 35  
+  prep_out_channels: 64  # Increased from 32 for more capacity to hide
+  # HideNet input channels: 3 (cover) + prep_out_channels (64) = 67
+  hide_in_channels: 67  # Updated to match new prep_out_channels
   # reveal_out_channels is set dynamically in models.py (will be 1 for binary)
 
 # Training Configuration
 training:
   batch_size: 32
-  epochs: 1 # Adjust as needed
+  epochs: 3 # Adjust as needed
   lr: 1e-4
-  lam_hide: 0.75  # Weight for hiding loss (MSE)
-  lam_reveal: 1.0  # Weight for reveal loss (BCEWithLogitsLoss for binary, applied to aligned secret)
-  checkpoint_dir: ./outputs/checkpoints/rotation-robust-binary
+  lam_hide: 3.5  # Increased from 1.2 to prioritize visual quality of stego
+  lam_reveal: 0.8  # Decreased from 1.0 to emphasize image hiding over reveal accuracy
+  checkpoint_dir: ./outputs/checkpoints/rotation-robust-mnist
   checkpoint_freq: 5  # Save every N epochs
   val_freq: 1  # Validate every N epochs
   device: auto  # Options: auto, cuda, cpu
@@ -32,7 +32,7 @@ training:
     enabled: true
     project: "deep-steganography-rotation"
     entity: null # Your wandb username or team name
-    run_name: "rotation-robust-binary-inv-v1"
+    run_name: "rotation-robust-mnist-inv-v1"
 
 # Rotation Training Configuration
 rotation:
@@ -54,7 +54,7 @@ translation:
 scaling:
   enabled: true
   # Min/Max scaling factor (1.0 means no scaling)
-  min_scale_factor: 0.9
+  min_scale_factor: 0.5
   max_scale_factor: 1.1
   # Probability of applying scaling during training (independent of others)
   prob: 0.5
@@ -65,19 +65,19 @@ evaluation:
   # Metrics: psnr/ssim compare cover and stego
   # secret_acc_aligned will be calculated in the test script
   test_angles: [0, 90, 180, 270]
-  test_scales: [1.0, 0.9, 1.1]
-  test_translations_fraction: [0.0, 0.125] # Test no shift and +/- 8 pixels (for 64x64) # Example translation fractions (0.0 = identity)
+  test_scales: [1.0, 0.9, 1.1, 0.8, 1.2]
+  test_translations_fraction: [0.0, 0.125, 0.25] # Test no shift and +/- 8 pixels (for 64x64) # Example translation fractions (0.0 = identity)
   metrics: [psnr, ssim] 
 
 # Embedding/Extraction Configuration
 embed:
   cover_image: null
   secret_image: null # Binary secrets generated on the fly
-  output_image: ./outputs/stego_rotation_robust_binary.png
+  output_image: ./outputs/stego_rotation_robust_invisible.png
   # Checkpoint path used by test_rotation and experiment_rotation modes
-  checkpoint_path: ./outputs/checkpoints/rotation-robust-binary/best_checkpoint.pth 
+  checkpoint_path: ./outputs/checkpoints/rotation-robust-mnist/best_checkpoint.pth 
 
 extract:
   stego_image: null
-  output_secret: ./outputs/revealed_secret_rotation_robust_binary.png
-  checkpoint_path: ./outputs/checkpoints/rotation-robust-binary/best_checkpoint.pth 
+  output_secret: ./outputs/revealed_secret_rotation_robust_invisible.png
+  checkpoint_path: ./outputs/checkpoints/rotation-robust-mnist/best_checkpoint.pth 
