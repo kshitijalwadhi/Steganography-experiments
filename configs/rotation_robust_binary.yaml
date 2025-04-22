@@ -20,7 +20,7 @@ model:
 # Training Configuration
 training:
   batch_size: 32
-  epochs: 2 # Adjust as needed
+  epochs: 1 # Adjust as needed
   lr: 1e-4
   lam_hide: 0.75  # Weight for hiding loss (MSE)
   lam_reveal: 1.0  # Weight for reveal loss (BCEWithLogitsLoss for binary, applied to aligned secret)
@@ -40,12 +40,33 @@ rotation:
   # Probability of applying each rotation during training
   probs: [0.25, 0.25, 0.25, 0.25]  # [0°, 90°, 180°, 270°]
   rotation_angles: [0, 90, 180, 270]
+  prob: 0.5 # Probability of applying rotation transformation
+
+# Translation Training Configuration
+translation:
+  enabled: true
+  # Max translation shift as a fraction of image size (e.g., 0.1 means +/- 10% shift)
+  max_shift_fraction: 0.125 # E.g. +/- 8 pixels for 64x64
+  # Probability of applying translation during training (independent of others)
+  prob: 0.5
+
+# Scaling Training Configuration
+scaling:
+  enabled: true
+  # Min/Max scaling factor (1.0 means no scaling)
+  min_scale_factor: 0.9
+  max_scale_factor: 1.1
+  # Probability of applying scaling during training (independent of others)
+  prob: 0.5
 
 # Evaluation Configuration
 evaluation:
   batch_size: 32
   # Metrics: psnr/ssim compare cover and stego
   # secret_acc_aligned will be calculated in the test script
+  test_angles: [0, 90, 180, 270]
+  test_scales: [1.0, 0.9, 1.1]
+  test_translations_fraction: [0.0, 0.125] # Test no shift and +/- 8 pixels (for 64x64) # Example translation fractions (0.0 = identity)
   metrics: [psnr, ssim] 
 
 # Embedding/Extraction Configuration

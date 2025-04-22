@@ -6,7 +6,7 @@ from omegaconf import OmegaConf
 from src.evaluate import evaluate
 from src.experiment_rotation import experiment_rotation
 from src.models import SteganoModel
-from src.test_rotation_robust import test_rotation_robustness
+from src.test_transform_robust import test_transform_robustness
 from src.train import train
 from src.utils import get_device, load_config, run_embedding, run_extraction
 
@@ -23,9 +23,9 @@ def main():
             "embed",
             "extract",
             "experiment_rotation",
-            "test_rotation",
+            "test_transform",
         ],
-        help="Operation mode: train, evaluate, embed, extract, experiment_rotation, or test_rotation",
+        help="Operation mode: train, evaluate, embed, extract, experiment_rotation, or test_transform",
     )
     parser.add_argument(
         "--config",
@@ -63,8 +63,8 @@ def main():
         evaluate(cfg)  # evaluate function needs cfg, loads model inside
     elif args.mode == "experiment_rotation":
         experiment_rotation(cfg)  # Run the rotation experiment
-    elif args.mode == "test_rotation":
-        test_rotation_robustness(cfg)  # Run our new rotation test
+    elif args.mode == "test_transform":
+        test_transform_robustness(cfg)  # Run the new transformation test
     elif args.mode == "embed" or args.mode == "extract":
         # Embedding and Extraction need an initialized model
         device = get_device(cfg.training.device)  # Use training device setting

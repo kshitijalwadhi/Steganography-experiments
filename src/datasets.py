@@ -7,9 +7,8 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 
-from src.utils import (
-    prepare_secret,  # Assuming this isn't needed for image secrets loaded directly
-)
+from src.utils import \
+    prepare_secret  # Assuming this isn't needed for image secrets loaded directly
 
 
 def get_transforms(size, channels=3):
