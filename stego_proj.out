@@ -1,0 +1,122 @@
+--- Configuration ---
+data:
+  root_dir: ./data
+  cover_dataset: CIFAR10
+  secret_type: binary
+  image_folder_cover: null
+  image_folder_secret: null
+  image_size: 64
+  num_workers: 4
+model:
+  prep_out_channels: 32
+  hide_in_channels: 35
+  reveal_out_channels: 1
+  rotation_invariant: true
+training:
+  batch_size: 32
+  epochs: 2
+  lr: 0.0001
+  lam_hide: 0.75
+  lam_reveal: 1.0
+  checkpoint_dir: ./outputs/checkpoints/rotation_invariant
+  checkpoint_freq: 1
+  val_freq: 1
+  device: auto
+  wandb:
+    enabled: true
+    project: deep-steganography-final
+    entity: null
+    run_name: null
+evaluation:
+  batch_size: 32
+  metrics:
+  - psnr
+  - ssim
+  - lpips
+  - bit_acc
+embed:
+  checkpoint_path: ./outputs/checkpoints/rotation_invariant/best_checkpoint.pth
+
+---------------------
+Using device: cuda
+WandB run 'CIFAR10_binary_ep2_bs32' initialized.
+Loading data...
+Using CIFAR10: 50000 train, 10000 val images.
+Data loaded.
+Initializing model...
+SteganoModel(
+  (prep): PrepNet(
+    (net): Sequential(
+      (0): Sequential(
+        (0): Conv2d(1, 32, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2), bias=False)
+        (1): BatchNorm2d(32, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU(inplace=True)
+      )
+      (1): Sequential(
+        (0): Conv2d(32, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+        (1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU(inplace=True)
+      )
+      (2): Sequential(
+        (0): Conv2d(64, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+        (1): BatchNorm2d(32, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU(inplace=True)
+      )
+    )
+  )
+  (hider): HideNet(
+    (enc1): Sequential(
+      (0): Conv2d(35, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU(inplace=True)
+    )
+    (enc2): Sequential(
+      (0): Conv2d(64, 128, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU(inplace=True)
+    )
+    (bottleneck): Sequential(
+      (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU(inplace=True)
+    )
+    (up): ConvTranspose2d(128, 64, kernel_size=(2, 2), stride=(2, 2))
+    (dec1): Sequential(
+      (0): Conv2d(128, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU(inplace=True)
+    )
+    (out_conv): Conv2d(64, 3, kernel_size=(1, 1), stride=(1, 1))
+  )
+  (reveal): RevealNet(
+    (net): RevealNetRotInvariant(
+      (conv1): R2Conv([C4_on_R2[(None, 4)]: {irrep_0 (x3)}(3)], [C4_on_R2[(None, 4)]: {regular (x8)}(32)], kernel_size=5, stride=1, padding=2)
+      (bn1): InnerBatchNorm([C4_on_R2[(None, 4)]: {regular (x8)}(32)], eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU(inplace=False, type=[C4_on_R2[(None, 4)]: {regular (x8)}(32)])
+      (conv2): R2Conv([C4_on_R2[(None, 4)]: {regular (x8)}(32)], [C4_on_R2[(None, 4)]: {regular (x8)}(32)], kernel_size=3, stride=1, padding=1)
+      (bn2): InnerBatchNorm([C4_on_R2[(None, 4)]: {regular (x8)}(32)], eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu2): ReLU(inplace=False, type=[C4_on_R2[(None, 4)]: {regular (x8)}(32)])
+      (conv3): R2Conv([C4_on_R2[(None, 4)]: {regular (x8)}(32)], [C4_on_R2[(None, 4)]: {regular (x16)}(64)], kernel_size=3, stride=1, padding=1)
+      (bn3): InnerBatchNorm([C4_on_R2[(None, 4)]: {regular (x16)}(64)], eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu3): ReLU(inplace=False, type=[C4_on_R2[(None, 4)]: {regular (x16)}(64)])
+      (conv4): R2Conv([C4_on_R2[(None, 4)]: {regular (x16)}(64)], [C4_on_R2[(None, 4)]: {regular (x16)}(64)], kernel_size=3, stride=1, padding=1)
+      (bn4): InnerBatchNorm([C4_on_R2[(None, 4)]: {regular (x16)}(64)], eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu4): ReLU(inplace=False, type=[C4_on_R2[(None, 4)]: {regular (x16)}(64)])
+      (conv5): R2Conv([C4_on_R2[(None, 4)]: {regular (x16)}(64)], [C4_on_R2[(None, 4)]: {irrep_0 (x1)}(1)], kernel_size=1, stride=1)
+      (invariant_map): GroupPooling([C4_on_R2[(None, 4)]: {irrep_0 (x1)}(1)])
+    )
+  )
+)
+Model initialized.
+Starting training from epoch 0...
+Epoch 0 Train Summary: Loss=0.1365, Hide=0.0252, Reveal=0.1176, PSNR=16.69, Acc=96.9%
+Epoch 0 Validation Summary: Loss=0.0267, Hide=0.0103, Reveal=0.0190, PSNR=19.91, Acc=100.0%
+New best validation loss: 0.0267
+Checkpoint saved to outputs/checkpoints/rotation_invariant/best_checkpoint.pth
+Checkpoint saved to outputs/checkpoints/rotation_invariant/latest_checkpoint.pth
+Epoch 1 Train Summary: Loss=0.0168, Hide=0.0088, Reveal=0.0102, PSNR=20.64, Acc=100.0%
+Epoch 1 Validation Summary: Loss=0.0103, Hide=0.0068, Reveal=0.0052, PSNR=21.75, Acc=100.0%
+New best validation loss: 0.0103
+Checkpoint saved to outputs/checkpoints/rotation_invariant/best_checkpoint.pth
+Checkpoint saved to outputs/checkpoints/rotation_invariant/latest_checkpoint.pth
+Training finished.
