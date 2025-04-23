@@ -24,7 +24,7 @@ training:
   lr: 1e-4
   lam_hide: 10.0  # Increased from 1.2 to prioritize visual quality of stego
   lam_reveal: 0.8  # Decreased from 1.0 to emphasize image hiding over reveal accuracy
-  checkpoint_dir: ./outputs/checkpoints/rotation-robust-mnist
+  checkpoint_dir: ./outputs/checkpoints/rotation-robust-mnist-alltransf
   checkpoint_freq: 5  # Save every N epochs
   val_freq: 1  # Validate every N epochs
   device: auto  # Options: auto, cuda, cpu
@@ -32,7 +32,7 @@ training:
     enabled: true
     project: "deep-steganography-rotation"
     entity: null # Your wandb username or team name
-    run_name: "rotation-robust-mnist-inv-v1"
+    run_name: "rotation-robust-mnist-alltransf-inv-v1"
 
 # Rotation Training Configuration
 rotation:
@@ -75,9 +75,9 @@ embed:
   secret_image: null # Binary secrets generated on the fly
   output_image: ./outputs/stego_rotation_robust_invisible.png
   # Checkpoint path used by test_rotation and experiment_rotation modes
-  checkpoint_path: ./outputs/checkpoints/rotation-robust-mnist/best_checkpoint.pth 
+  checkpoint_path: ./outputs/checkpoints/rotation-robust-mnist-alltransf/best_checkpoint.pth 
 
 extract:
   stego_image: null
   output_secret: ./outputs/revealed_secret_rotation_robust_invisible.png
-  checkpoint_path: ./outputs/checkpoints/rotation-robust-mnist/best_checkpoint.pth 
+  checkpoint_path: ./outputs/checkpoints/rotation-robust-mnist-alltransf/best_checkpoint.pth 
