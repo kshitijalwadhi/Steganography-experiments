@@ -22,7 +22,7 @@ training:
   batch_size: 32
   epochs: 2 # Adjust as needed
   lr: 1e-4
-  lam_hide: 0.75  # Weight for hiding loss (MSE)
+  lam_hide: 100  # Weight for hiding loss (MSE)
   lam_reveal: 1.0  # Weight for reveal loss (BCEWithLogitsLoss for binary, applied to aligned secret)
   checkpoint_dir: ./outputs/checkpoints/rotation-robust-binary
   checkpoint_freq: 5  # Save every N epochs
@@ -30,7 +30,7 @@ training:
   device: auto  # Options: auto, cuda, cpu
   wandb:
     enabled: true
-    project: "deep-steganography-rotation"
+    project: "deep-steganography-final"
     entity: null # Your wandb username or team name
     run_name: "rotation-robust-binary-inv-v1"
 
