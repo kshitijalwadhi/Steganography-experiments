@@ -23,15 +23,15 @@ training:
   batch_size: 32
   epochs: 1
   lr: 1e-4
-  lam_hide: 0.75  # Weight for hiding loss (MSE)
-  lam_reveal: 1.0  # Weight for reveal loss (MSE for images, applied to aligned secret)
+  lam_hide: 10000.0  # Weight for hiding loss (MSE)
+  lam_reveal: 0.75  # Weight for reveal loss (MSE for images, applied to aligned secret)
   checkpoint_dir: ./outputs/checkpoints/rotation-robust-mnist
   checkpoint_freq: 5  # Save every N epochs
   val_freq: 1  # Validate every N epochs
   device: auto  # Options: auto, cuda, cpu
   wandb:
     enabled: true
-    project: "deep-steganography-rotation"
+    project: "deep-steganography-final"
     entity: null # Your wandb username or team name
     run_name: "rotation-robust-mnist-inv-v1"
 
