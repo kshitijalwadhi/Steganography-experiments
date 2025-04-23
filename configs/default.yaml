@@ -30,7 +30,7 @@ training:
     lam_rotate: 2.0
   wandb:
     enabled: true
-    project: "deep-steganography"
+    project: "deep-steganography-final"
     entity: null # Your wandb username or team name
     run_name: null # Auto-generated if null
 
