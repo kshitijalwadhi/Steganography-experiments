@@ -24,13 +24,13 @@ training:
   lr: 1e-4
   lam_hide: 0.75 # Weight for hiding loss (MSE)
   lam_reveal: 1.0 # Weight for reveal loss (BCE or MSE)
-  checkpoint_dir: ./outputs/checkpoints/rotation_invariant
+  checkpoint_dir: ./outputs/checkpoints/rotation_invariant_dataaug
   checkpoint_freq: 1 # Save every N epochs
   val_freq: 1 # Validate every N epochs
   device: auto # Options: auto, cuda, cpu
   wandb:
     enabled: true
-    project: "deep-steganography"
+    project: "deep-steganography-final"
     entity: null # Your wandb username or team name
     run_name: null # Auto-generated if null
 
@@ -41,4 +41,4 @@ evaluation:
 
 # Embedding configuration
 embed:
-  checkpoint_path: "./outputs/checkpoints/rotation_invariant/best_checkpoint.pth"  # Path to model checkpoint for evaluation/embedding
+  checkpoint_path: "./outputs/checkpoints/rotation_invariant_dataaug/best_checkpoint.pth"  # Path to model checkpoint for evaluation/embedding

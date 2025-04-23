@@ -177,5 +177,5 @@ wandb/
 data/
 outputs/
 stego_env/
-*.out
-*.err
+#*.out
+#*.err

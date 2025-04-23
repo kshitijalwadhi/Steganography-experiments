@@ -1,0 +1,44 @@
+--- Configuration ---
+data:
+  root_dir: ./data
+  cover_dataset: CIFAR10
+  secret_type: binary
+  image_folder_cover: null
+  image_folder_secret: null
+  image_size: 64
+  num_workers: 4
+model:
+  prep_out_channels: 32
+  hide_in_channels: 35
+  reveal_out_channels: 1
+  rotation_invariant: true
+training:
+  batch_size: 32
+  epochs: 2
+  lr: 0.0001
+  lam_hide: 0.75
+  lam_reveal: 1.0
+  checkpoint_dir: ./outputs/checkpoints/rotation_invariant_dataaug
+  checkpoint_freq: 1
+  val_freq: 1
+  device: auto
+  wandb:
+    enabled: true
+    project: deep-steganography-final
+    entity: null
+    run_name: null
+evaluation:
+  batch_size: 32
+  metrics:
+  - psnr
+  - ssim
+  - lpips
+  - bit_acc
+embed:
+  checkpoint_path: ./outputs/checkpoints/rotation_invariant_dataaug/best_checkpoint.pth
+
+---------------------
+--- Running Rotation Experiment ---
+Using device: cuda
+Using CIFAR10: 50000 train, 10000 val images.
+Evaluating on 10000 samples from validation set.
